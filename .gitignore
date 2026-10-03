@@ -1,0 +1,14 @@
+__pycache__/
+*.pyc
+.env
+.env.local
+*.db
+*.db-journal
+backend/local_db/*.db
+!backend/local_db/.gitkeep
+!backend/local_db/README.md
+.venv/
+venv/
+node_modules/
+.next/
+backend/.pytest_cache/

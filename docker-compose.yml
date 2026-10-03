@@ -1,0 +1,57 @@
+version: "3.9"
+services:
+  db:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: datagenie
+      POSTGRES_PASSWORD: datagenie
+      POSTGRES_DB: datagenie
+    ports:
+      - "5432:5432"
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+      - ./backend/data/init:/docker-entrypoint-initdb.d:ro
+      - ./backend/data/schema.sql:/docker-entrypoint-initdb.d/02_schema.sql:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U datagenie"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  backend:
+    build:
+      context: ./backend
+    env_file: .env
+    environment:
+      DATABASE_URL: postgresql+psycopg2://datagenie_app:datagenie_app@db:5432/datagenie
+    ports:
+      - "8001:8001"
+    depends_on:
+      db:
+        condition: service_healthy
+    command: uvicorn app.main:app --host 0.0.0.0 --port 8001
+
+  # Explicitly privileged developer utility; it is not part of the API runtime.
+  seed:
+    build:
+      context: ./backend
+    environment:
+      DATABASE_URL: postgresql+psycopg2://datagenie:datagenie@db:5432/datagenie
+    depends_on:
+      db:
+        condition: service_healthy
+    command: python -m scripts.seed_db
+    profiles: ["tools"]
+
+  frontend:
+    build:
+      context: ./frontend
+    ports:
+      - "3000:3000"
+    environment:
+      NEXT_PUBLIC_API_BASE: http://localhost:8001
+    depends_on:
+      - backend
+
+volumes:
+  pgdata:

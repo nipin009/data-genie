@@ -1,0 +1,112 @@
+questions:
+  # --- joins ---
+  - id: J1
+    category: join
+    question: "Total revenue by product category, ordered by revenue descending"
+    expect_class: in_scope
+    expect_rows: some
+    expect_sql_all: ["dg_categories", "sum(", "group by"]
+  - id: J2
+    category: join
+    question: "Top 5 customers by lifetime spend with their country"
+    expect_class: in_scope
+    expect_rows: some
+    expect_sql_all: ["dg_customers", "country", "limit 5"]
+  - id: J3
+    category: join
+    question: "List orders with customer name, product names and payment status"
+    expect_class: in_scope
+    expect_rows: some
+    expect_sql_all: ["dg_orders", "dg_customers", "dg_products", "dg_payments", "payment_status"]
+  # --- aggregations ---
+  - id: A1
+    category: aggregation
+    question: "What was total revenue and order count in 2024?"
+    expect_class: in_scope
+    expect_rows: some
+    expect_sql_all: ["2024", "total_revenue", "count(distinct"]
+  - id: A2
+    category: aggregation
+    question: "Show monthly revenue trend for the last 12 months"
+    expect_class: in_scope
+    expect_rows: some
+    expect_sql_all: ["month", "revenue", "group by"]
+    expect_sql_any: [["interval '12 months'", "-12 months"]]
+  - id: A3
+    category: aggregation
+    question: "What is the average order value by customer segment?"
+    expect_class: in_scope
+    expect_rows: some
+    expect_sql_all: ["avg(", "customer_segment", "group by"]
+  - id: A4
+    category: aggregation
+    question: "Average product rating by category"
+    expect_class: in_scope
+    expect_rows: some
+    expect_sql_all: ["dg_product_reviews", "avg(", "rating", "dg_categories"]
+  # --- filters / edge cases ---
+  - id: E1
+    category: edge
+    question: "Show all failed payments with order id and amount"
+    expect_class: in_scope
+    expect_rows: some
+    expect_sql_all: ["dg_payments", "failed"]
+  - id: E2
+    category: edge
+    question: "Orders with status 'pending' placed in the last 30 days"
+    expect_class: in_scope
+    # A relative 30-day window can legitimately be empty in deterministic
+    # synthetic data; validate the filter contract rather than inventing rows.
+    expect_rows: any
+    expect_sql_all: ["pending"]
+    expect_sql_any: [["interval '30 days'", "-30 days"]]
+  - id: E3
+    category: edge
+    question: "Revenue for product 'Nonexistent Gizmo XYZ123' in 2024"
+    expect_class: in_scope
+    expect_rows: none
+    expect_sql_all: ["nonexistent gizmo xyz123", "2024"]
+  - id: E4
+    category: edge
+    question: "Top 3 products by return rate"
+    expect_class: in_scope
+    expect_rows: some
+    expect_sql_all: ["returned_quantity", "nullif", "limit 3"]
+  # --- ambiguity (must trigger clarification, no SQL) ---
+  - id: X1
+    category: ambiguity
+    question: "Show me recent sales"
+    expect_class: ambiguous
+    expect_rows: none
+  - id: X2
+    category: ambiguity
+    question: "Who are the top customers?"
+    expect_class: ambiguous
+    expect_rows: none
+  - id: X3
+    category: ambiguity
+    question: "Compare performance"
+    expect_class: ambiguous
+    expect_rows: none
+  # --- unsupported ---
+  - id: U1
+    category: unsupported
+    question: "Delete all cancelled orders from the database"
+    expect_class: unsupported
+    expect_rows: none
+  - id: U2
+    category: unsupported
+    question: "Predict next quarter revenue with a forecast model"
+    expect_class: unsupported
+    expect_rows: none
+  # --- unrelated ---
+  - id: R1
+    category: irrelevant
+    question: "Tell me a joke about pirates"
+    expect_class: unrelated
+    expect_rows: none
+  - id: R2
+    category: irrelevant
+    question: "What is the capital of France?"
+    expect_class: unrelated
+    expect_rows: none
