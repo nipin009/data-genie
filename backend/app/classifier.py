@@ -12,6 +12,7 @@ request is 'ambiguous' and the graph routes to clarification.
 - unrelated: not about the database at all (greetings handled as unrelated-smalltalk).
 """
 import re
+import json
 from dataclasses import dataclass, field
 from typing import List, Optional
 
@@ -55,20 +56,27 @@ SENSITIVE_DATA_PATTERNS = [
     r"\b(?:what is|what's)\b.*\b(?:email|phone number|address|date of birth)\b",
 ]
 
-# Data-looking requests for business concepts this retail schema does not model.
+# Data-looking requests for business concepts this schema does not model.  Keep
+# this deliberately narrow: the authoritative schema now includes inventory,
+# employees, suppliers, campaigns, subscriptions, and conversion membership.
+# A stale deny-list is worse than no deny-list because it silently rejects
+# answerable questions before retrieval has a chance to inspect the schema.
 MISSING_SCHEMA_HINTS = [
-    "inventory level", "stock level", "warehouse temperature", "employee", "payroll",
-    "supplier performance", "ad spend", "marketing campaign", "web traffic", "conversion rate",
+    "warehouse temperature", "payroll", "ad spend", "web traffic",
 ]
 
 SCHEMA_REQUEST_PATTERNS = [
     r"\bhow many tables?\b",
+    r"\b(?:list|show|give|what are)\s+(?:all\s+)?(?:the\s+)?tables?\b",
+    r"\b(?:name|list|show|give)\s+(?:all|al)\s+(?:the\s+)?tables?\b",
     r"\b(?:list|show|give|what are)\s+(?:the\s+)?table\s+(?:names?|anmes|nmaes)\b",
     r"\btable\s+(?:names?|anmes|nmaes)\s+(?:only|please)?\b",
     r"\b(?:describe|show|list|give)\s+(?:the\s+)?(?:database )?schema\b",
     r"\b(?:give|show|list|describe)\b.*\bschema\s+(?:of|for)\s+(?:each|every|all)\s+tables?\b",
     r"\b(?:each|every|all)\s+tables?\b.*\bschema\b",
     r"\b(?:columns?|fields?)\s+(?:in|of|for)\b",
+    r"\b(?:name|list|show|give|what are)\b.*\b(?:columns?|fields?)\b.*\b(?:in|of|for)\b",
+    r"\bwhich\s+tables?\b.*\b(?:money|financial|revenue|payment|invoice|cost|price|amount)\b",
     r"\b(?:table )?(?:relationships?|foreign keys?|join graph)\b",
     r"\bwhich table\s+(?:has|contains)\b",
 ]
@@ -95,7 +103,58 @@ def _has(tokens: List[str], text: str) -> bool:
     return any(t in text for t in tokens)
 
 
-def classify(question: str, table_names: Optional[List[str]] = None) -> Classification:
+VALID_LABELS = {"in_scope", "assistant_info", "schema_request", "ambiguous", "unsupported", "not_in_schema", "unrelated"}
+
+
+def _classify_with_llm(question: str, table_names: Optional[List[str]], history: Optional[List[dict]] = None) -> Optional[Classification]:
+    """Use Gemini structured JSON classification before schema retrieval.
+
+    Only table names are supplied at this stage, never the complete schema.
+    A conservative local fallback is retained for offline development and model
+    outages; production classification does not use regex routing.
+    """
+    try:
+        from .llm import has_llm_key, _gemini_model, enable_langsmith
+        if not has_llm_key():
+            return None
+        enable_langsmith()
+        names = ", ".join(table_names or [])
+        recent = "\n".join(f"{m.get('role')}: {m.get('content')}" for m in (history or [])[-6:])
+        prompt = f'''Classify this request for a read-only business analytics assistant.
+Available table names: {names}
+Return ONLY JSON with keys label, reason, missing, questions. label must be one of:
+in_scope, assistant_info, schema_request, ambiguous, unsupported, not_in_schema, unrelated.
+Use schema_request for table/column/relationship questions. Requests such as “name/list/show/give all tables in my DB”, including obvious spelling mistakes such as “al”, are ALWAYS schema_request, never in_scope. Use ambiguous only when a required detail cannot be inferred from the semantic catalog or schema: “recent” requires a date range, “top” requires N, and vague performance/comparison requests need a metric or grouping. A named metric with a catalog definition (for example total revenue) is clear, and no stated date range means all available data; do NOT ask for a revenue-definition or date-range clarification in that case. Superlatives such as weakest, highest, or broadest are clear ranking requests when their metric and entity are named; they do not need a Top-N clarification. Use unsupported for writes, destructive SQL, forecasts, or direct contact/payment identifiers. Use unrelated only when it has no connection to available business data. Treat users as customers. Do not generate SQL.
+Recent conversation (resolve pronouns and follow-ups from it):
+{recent}
+Question: {question}'''
+        raw = (_gemini_model().invoke(prompt).content or "").strip()
+        if "```" in raw:
+            raw = re.sub(r"^```(?:json)?\s*|\s*```$", "", raw, flags=re.I)
+        data = json.loads(raw)
+        label = data.get("label")
+        if label not in VALID_LABELS:
+            return None
+        missing = data.get("missing") if isinstance(data.get("missing"), list) else []
+        questions = data.get("questions") if isinstance(data.get("questions"), list) else []
+        return Classification(label, str(data.get("reason") or "LLM intent classification."), missing[:3], questions[:3], 0.9)
+    except Exception:
+        return None
+
+
+def classify(question: str, table_names: Optional[List[str]] = None, history: Optional[List[dict]] = None) -> Classification:
+    llm_result = _classify_with_llm(question, table_names, history)
+    if llm_result is not None:
+        return llm_result
+    from .config import get_settings
+    if get_settings().ALLOW_DETERMINISTIC_FALLBACK:
+        return _classify_fallback(question, table_names)
+    # Generic Text-to-SQL cannot be honestly emulated with phrase-specific
+    # routing. Require the configured LLM rather than silently applying rules.
+    return Classification("unsupported", "Generic Text-to-SQL requires a configured Gemini API key; no query was generated.")
+
+
+def _classify_fallback(question: str, table_names: Optional[List[str]] = None) -> Classification:
     q = (question or "").strip()
     ql = q.lower()
     if not q:
@@ -132,11 +191,13 @@ def classify(question: str, table_names: Optional[List[str]] = None) -> Classifi
     if any(h in ql for h in ASSISTANT_INFO_PATTERNS):
         return Classification("assistant_info", "Question is about Data Genie or how to use it.", [], [], 0.95)
 
-    data_words = ["order", "revenue", "sale", "customer", "product", "categor",
+    data_words = ["order", "revenue", "sale", "customer", "user", "product", "categor",
                   "payment", "review", "rating", "refund", "return", "discount",
-                  "total", "average", "count", "sum", "top", "list", "show",
-                  "how many", "how much", "trend", "compare", "breakdown",
-                  "table", "chart", "orders", "customers", "products"]
+                  "inventory", "stock", "warehouse", "shipment", "supplier", "employee",
+                  "department", "region", "invoice", "campaign", "conversion", "ticket",
+                  "support", "plan", "subscription", "vendor", "total", "average", "count",
+                  "sum", "top", "list", "show", "how many", "how much", "trend",
+                  "compare", "breakdown", "table", "chart", "orders", "customers", "products"]
     looks_like_data = _has(data_words, ql) or (table_names and any(t in ql for t in table_names))
 
     unrelated_hit = _has(UNRELATED_HINTS, ql)

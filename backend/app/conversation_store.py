@@ -108,9 +108,20 @@ def history(cid: str, limit: int = 50) -> List[Dict[str, Any]]:
     return messages
 
 
-def set_pending(cid: str, questions: List[str], original_question: str = "", query_spec: Optional[Dict] = None) -> None:
+def set_pending(
+    cid: str,
+    questions: List[str],
+    original_question: str = "",
+    query_spec: Optional[Dict] = None,
+    clarification_context: str = "",
+) -> None:
     get_or_create(cid)
-    pending = {"questions": questions, "original_question": original_question, "query_spec": query_spec or {}}
+    pending = {
+        "questions": questions,
+        "original_question": original_question,
+        "query_spec": query_spec or {},
+        "clarification_context": clarification_context,
+    }
     with get_engine().begin() as conn:
         conn.execute(text("""UPDATE datagenie_sessions
             SET pending_clarification = :pending, updated_at = :updated WHERE conversation_id = :cid"""),
@@ -119,7 +130,7 @@ def set_pending(cid: str, questions: List[str], original_question: str = "", que
 
 def pop_pending(cid: str) -> Dict[str, Any]:
     ensure_tables()
-    empty: Dict[str, Any] = {"questions": [], "original_question": "", "query_spec": {}}
+    empty: Dict[str, Any] = {"questions": [], "original_question": "", "query_spec": {}, "clarification_context": ""}
     with get_engine().begin() as conn:
         raw = conn.execute(text("SELECT pending_clarification FROM datagenie_sessions WHERE conversation_id = :cid"),
                            {"cid": cid}).scalar()

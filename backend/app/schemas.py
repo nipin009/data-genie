@@ -44,3 +44,28 @@ class HistoryMessage(BaseModel):
 class ConversationHistory(BaseModel):
     conversation_id: str
     messages: List[HistoryMessage]
+
+
+class MutationPreviewRequest(BaseModel):
+    instruction: str = Field(..., min_length=3, max_length=4000)
+
+
+class MutationPreviewResponse(BaseModel):
+    proposal_id: str
+    instruction: str
+    sql: str
+    summary: str
+    risk: str
+    expires_at: str
+
+
+class MutationConfirmRequest(BaseModel):
+    proposal_id: str
+    confirmation: str = Field(..., description="Must exactly equal APPLY")
+
+
+class MutationConfirmResponse(BaseModel):
+    proposal_id: str
+    status: str
+    rows_affected: Optional[int] = None
+    message: str

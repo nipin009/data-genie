@@ -151,3 +151,27 @@ CREATE INDEX IF NOT EXISTS idx_items_product ON dg_order_items(product_id);
 CREATE INDEX IF NOT EXISTS idx_products_category ON dg_products(category_id);
 CREATE INDEX IF NOT EXISTS idx_payments_order ON dg_payments(order_id);
 CREATE INDEX IF NOT EXISTS idx_reviews_product ON dg_product_reviews(product_id);
+
+-- Extended commerce and operations domain.  These tables intentionally use a
+-- compact analytical shape: keys, relationships, dates and business measures.
+CREATE TABLE IF NOT EXISTS dg_regions (region_id SERIAL PRIMARY KEY, region_name VARCHAR(80) NOT NULL UNIQUE, country VARCHAR(80) NOT NULL);
+CREATE TABLE IF NOT EXISTS dg_departments (department_id SERIAL PRIMARY KEY, department_name VARCHAR(80) NOT NULL, region_id INTEGER REFERENCES dg_regions(region_id));
+CREATE TABLE IF NOT EXISTS dg_employees (employee_id SERIAL PRIMARY KEY, employee_name VARCHAR(120) NOT NULL, department_id INTEGER REFERENCES dg_departments(department_id), hire_date DATE NOT NULL);
+CREATE TABLE IF NOT EXISTS dg_suppliers (supplier_id SERIAL PRIMARY KEY, supplier_name VARCHAR(120) NOT NULL, region_id INTEGER REFERENCES dg_regions(region_id));
+CREATE TABLE IF NOT EXISTS dg_supplier_products (supplier_id INTEGER REFERENCES dg_suppliers(supplier_id), product_id INTEGER REFERENCES dg_products(product_id), supplier_cost NUMERIC(12,2) NOT NULL, PRIMARY KEY (supplier_id, product_id));
+CREATE TABLE IF NOT EXISTS dg_warehouses (warehouse_id SERIAL PRIMARY KEY, warehouse_name VARCHAR(100) NOT NULL, region_id INTEGER REFERENCES dg_regions(region_id));
+CREATE TABLE IF NOT EXISTS dg_inventory (inventory_id SERIAL PRIMARY KEY, warehouse_id INTEGER NOT NULL REFERENCES dg_warehouses(warehouse_id), product_id INTEGER NOT NULL REFERENCES dg_products(product_id), quantity_on_hand INTEGER NOT NULL, reorder_level INTEGER NOT NULL, UNIQUE(warehouse_id, product_id));
+CREATE TABLE IF NOT EXISTS dg_shipments (shipment_id SERIAL PRIMARY KEY, order_id INTEGER NOT NULL REFERENCES dg_orders(order_id), warehouse_id INTEGER REFERENCES dg_warehouses(warehouse_id), shipped_at DATE, status VARCHAR(30) NOT NULL);
+CREATE TABLE IF NOT EXISTS dg_returns (return_id SERIAL PRIMARY KEY, order_id INTEGER NOT NULL REFERENCES dg_orders(order_id), order_item_id INTEGER REFERENCES dg_order_items(order_item_id), return_date DATE NOT NULL, status VARCHAR(30) NOT NULL);
+CREATE TABLE IF NOT EXISTS dg_invoices (invoice_id SERIAL PRIMARY KEY, order_id INTEGER NOT NULL REFERENCES dg_orders(order_id), invoice_date DATE NOT NULL, amount_due NUMERIC(12,2) NOT NULL, status VARCHAR(30) NOT NULL);
+CREATE TABLE IF NOT EXISTS dg_campaigns (campaign_id SERIAL PRIMARY KEY, campaign_name VARCHAR(120) NOT NULL, start_date DATE NOT NULL, budget NUMERIC(12,2) NOT NULL);
+CREATE TABLE IF NOT EXISTS dg_campaign_members (campaign_id INTEGER REFERENCES dg_campaigns(campaign_id), customer_id INTEGER REFERENCES dg_customers(customer_id), joined_at DATE NOT NULL, converted BOOLEAN NOT NULL DEFAULT FALSE, PRIMARY KEY(campaign_id, customer_id));
+CREATE TABLE IF NOT EXISTS dg_support_tickets (ticket_id SERIAL PRIMARY KEY, customer_id INTEGER NOT NULL REFERENCES dg_customers(customer_id), order_id INTEGER REFERENCES dg_orders(order_id), opened_at DATE NOT NULL, status VARCHAR(30) NOT NULL);
+CREATE TABLE IF NOT EXISTS dg_plans (plan_id SERIAL PRIMARY KEY, plan_name VARCHAR(80) NOT NULL UNIQUE, monthly_price NUMERIC(10,2) NOT NULL);
+CREATE TABLE IF NOT EXISTS dg_subscriptions (subscription_id SERIAL PRIMARY KEY, customer_id INTEGER NOT NULL REFERENCES dg_customers(customer_id), plan_id INTEGER NOT NULL REFERENCES dg_plans(plan_id), started_at DATE NOT NULL, status VARCHAR(30) NOT NULL);
+CREATE TABLE IF NOT EXISTS dg_vendors (vendor_id SERIAL PRIMARY KEY, vendor_name VARCHAR(120) NOT NULL, service_type VARCHAR(60) NOT NULL);
+
+CREATE INDEX IF NOT EXISTS idx_inventory_product ON dg_inventory(product_id);
+CREATE INDEX IF NOT EXISTS idx_shipments_order ON dg_shipments(order_id);
+CREATE INDEX IF NOT EXISTS idx_returns_order ON dg_returns(order_id);
+CREATE INDEX IF NOT EXISTS idx_tickets_customer ON dg_support_tickets(customer_id);

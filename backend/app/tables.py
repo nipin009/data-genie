@@ -13,6 +13,10 @@ LOGICAL_TABLES = (
     "order_items",
     "payments",
     "product_reviews",
+    "regions", "departments", "employees", "suppliers", "supplier_products",
+    "warehouses", "inventory", "shipments", "returns", "invoices",
+    "campaigns", "campaign_members", "support_tickets", "plans",
+    "subscriptions", "vendors",
 )
 
 

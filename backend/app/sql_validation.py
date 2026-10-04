@@ -6,7 +6,7 @@ Returns structured ValidationResult consumed by the LangGraph conditional edge.
 """
 import re
 from dataclasses import dataclass, field
-from typing import Dict, List, Optional, Set
+from typing import Dict, List, Optional, Set, Tuple
 
 import sqlglot
 import sqlglot.expressions as exp
@@ -23,7 +23,8 @@ ALLOWED_FUNCTIONS = {
     "SUM", "AVG", "COUNT", "MIN", "MAX", "COALESCE", "NULLIF", "LOWER", "UPPER",
     "CONCAT", "DATE_TRUNC", "TO_CHAR", "EXTRACT", "CAST", "ROUND", "ABS", "CEIL",
     "CEILING", "FLOOR", "SUBSTRING", "TRIM", "LENGTH", "CURRENT_DATE", "CURRENT_TIMESTAMP",
-    "NOW", "DATE", "STRFTIME", "TIME_TO_STR",
+    "NOW", "DATE", "STRFTIME", "TIME_TO_STR", "CASE", "IF", "RANK", "DENSE_RANK", "ROW_NUMBER",
+    "LAG", "LEAD", "DATE_PART", "TIMESTAMP_TRUNC",
 }
 
 # These fields are not needed for aggregate retail analytics and must never be
@@ -53,6 +54,7 @@ def validate_sql(
     sql: str,
     known_tables: Optional[Dict[str, Set[str]]] = None,
     max_rows: int = 500,
+    join_edges: Optional[List[Tuple[str, str, str, str]]] = None,
 ) -> ValidationResult:
     if not sql or not sql.strip():
         return ValidationResult(False, "Empty SQL.")
@@ -121,6 +123,16 @@ def validate_sql(
                 aliases.add((a.alias_or_name or "").lower())
             except Exception:
                 pass
+        # A wildcard projection can include restricted PII columns without
+        # naming them, so column-by-column checks alone are insufficient.
+        # COUNT(*) remains valid because its star is nested in an aggregate,
+        # not used as a SELECT-list projection.
+        for select in parsed.find_all(exp.Select):
+            for projection in select.expressions:
+                target = projection.this if isinstance(projection, exp.Alias) else projection
+                if isinstance(target, exp.Star) or (isinstance(target, exp.Column) and target.name == "*"):
+                    return ValidationResult(False, "Wildcard projections are not allowed; select approved columns explicitly.")
+
         for col in parsed.find_all(exp.Column):
             tbl = (col.table or "").lower()
             cname = (col.name or "").lower()
@@ -145,6 +157,32 @@ def validate_sql(
                 known_refs = [rt for rt in ref_tables if rt in known_lower]
                 if known_refs and all(cname not in known_lower.get(rt, set()) for rt in known_refs):
                     return ValidationResult(False, f"Unknown column '{col.sql()}'.")
+
+    # Reject fabricated joins when both sides are physical tables and the ON
+    # predicate names a column pair not represented by the reflected FK graph.
+    # Complex predicates/CTEs are deliberately left to the normal column and
+    # execution checks, because a strict syntactic rule would reject valid SQL.
+    if join_edges:
+        alias_map = {}
+        for table in parsed.find_all(exp.Table):
+            alias_map[(table.alias_or_name or "").lower()] = table.name.lower()
+            alias_map[table.name.lower()] = table.name.lower()
+        allowed_pairs = {
+            frozenset(((a.lower(), b.lower()), (c.lower(), d.lower())))
+            for a, b, c, d in join_edges
+        }
+        for join in parsed.find_all(exp.Join):
+            on = join.args.get("on")
+            if on is None:
+                continue
+            pairs = []
+            for eq in on.find_all(exp.EQ):
+                left, right = eq.left, eq.right
+                if isinstance(left, exp.Column) and isinstance(right, exp.Column) and left.table and right.table:
+                    pairs.append(((alias_map.get(left.table.lower(), left.table.lower()), left.name.lower()),
+                                  (alias_map.get(right.table.lower(), right.table.lower()), right.name.lower())))
+            if pairs and not any(frozenset(pair) in allowed_pairs for pair in pairs):
+                return ValidationResult(False, "JOIN condition does not match an allowed foreign-key relationship.")
 
     has_limit = parsed.args.get("limit") is not None
     fixed = s

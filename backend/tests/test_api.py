@@ -48,6 +48,14 @@ def test_unrelated_no_sql(client):
     assert body["rows"] == [] and body["sql"] is None
 
 
+def test_health_reports_runtime_query_capability(client):
+    health = client.get("/healthz")
+    assert health.status_code == 200
+    assert "llm_configured" in health.json()
+    assert "offline_fallback_enabled" in health.json()
+    assert client.get("/readyz").status_code == 200
+
+
 def test_greeting_and_data_genie_questions_are_answered_without_sql(client):
     greeting = client.post("/api/chat", json={"message": "hello"}).json()
     assert greeting["classification"] == "assistant_info"
@@ -76,10 +84,11 @@ def test_schema_requests_bypass_sql(client):
     assert body["classification"] == "schema_request"
     assert body["sql"] is None and body["rows"] == []
     assert "dg_orders" in body["answer"]
+    assert "order_date" not in body["answer"]
 
     count = client.post("/api/chat", json={"message": "How many tables are there in the database?"}).json()
     assert count["classification"] == "schema_request"
-    assert "7 tables" in count["answer"]
+    assert "23 tables" in count["answer"]
 
     full_schema = client.post("/api/chat", json={"message": "Give the schema of each table which you have"}).json()
     assert full_schema["classification"] == "schema_request"
@@ -126,6 +135,14 @@ def test_clarify_flow(client):
     body = r2.json()
     assert body["classification"] == "in_scope"
     assert body["row_count"] >= 1
+
+
+def test_clarification_context_does_not_recursively_wrap_original_request():
+    from app.main import _clarification_prompt
+    combined = _clarification_prompt("Revenue by category", ["Which year?"], "net of returns", "last year")
+    assert combined.count("Original request:") == 1
+    assert "Earlier clarification: net of returns" in combined
+    assert "User clarification: last year" in combined
 
 
 def test_sql_injection_blocked():

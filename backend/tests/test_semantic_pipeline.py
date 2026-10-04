@@ -43,6 +43,30 @@ def test_fallback_declines_an_unknown_breakdown_instead_of_returning_a_total():
     assert build_fallback_sql("Revenue by city") == ""
 
 
+def test_fallback_preserves_specific_offline_requests():
+    cases = {
+        "How many customers signed up this month?": ("customer_count", "signup_date"),
+        "List active products by category": ("dg_categories", "p.is_active"),
+        "Top 5 products by revenue": ("limit 5", "product_name"),
+        "Revenue excluding cancelled orders": ("status <> 'cancelled'",),
+        "Return rate by product category": ("returned_quantity", "category_name"),
+    }
+    for question, fragments in cases.items():
+        sql = build_fallback_sql(question).lower()
+        assert all(fragment in sql for fragment in fragments), question
+        assert validate_semantics(sql, build_query_spec(question)) is None, question
+
+
+def test_net_revenue_after_returns_uses_the_canonical_returned_units_formula():
+    question = "Total revenue by product category, net of returns"
+    sql = build_fallback_sql(question).lower()
+    assert "returned_quantity" in sql
+    assert "net_revenue_after_returns" in sql
+    assert validate_semantics(sql, build_query_spec(question)) is None
+    from app.metrics import find_metrics
+    assert [metric.name for metric in find_metrics(question)] == ["net_revenue_after_returns"]
+
+
 def test_customer_listing_does_not_select_email():
     assert "email" not in build_fallback_sql("List customers").lower()
 

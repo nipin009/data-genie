@@ -44,6 +44,12 @@ def _tables():
             "cats": t("categories"), "cust": t("customers"), "prod": t("products"),
             "ord": t("orders"), "items": t("order_items"), "pay": t("payments"),
             "rev": t("product_reviews"),
+            "regions": t("regions"), "deps": t("departments"), "employees": t("employees"),
+            "suppliers": t("suppliers"), "supplier_products": t("supplier_products"),
+            "warehouses": t("warehouses"), "inventory": t("inventory"), "shipments": t("shipments"),
+            "returns": t("returns"), "invoices": t("invoices"), "campaigns": t("campaigns"),
+            "campaign_members": t("campaign_members"), "tickets": t("support_tickets"),
+            "plans": t("plans"), "subscriptions": t("subscriptions"), "vendors": t("vendors"),
         }
     except Exception:
         return {
@@ -99,6 +105,11 @@ def run(scale: float = 1.0, db_url=None):
     base = start  # earliest signup/product date
 
     with eng.begin() as conn:
+        for key in ("subscriptions", "campaign_members", "tickets", "returns", "shipments", "invoices", "inventory", "supplier_products", "employees", "deps", "warehouses", "suppliers", "campaigns", "plans", "vendors", "regions"):
+            try:
+                conn.execute(text(f"DELETE FROM {T[key]}"))
+            except Exception:
+                pass
         for t in (T["rev"], T["pay"], T["items"], T["ord"], T["prod"], T["cust"], T["cats"]):
             try:
                 conn.execute(text(f"DELETE FROM {t}"))
@@ -215,6 +226,36 @@ def run(scale: float = 1.0, db_url=None):
                 {"p": pid, "c": cust, "o": oid, "r": rating, "t": f"{'Great' if rating>=4 else 'Okay' if rating==3 else 'Poor'} product",
                  "b": f"Review body rating {rating}", "d": (od + dt.timedelta(days=RNG.randint(1, 60))).isoformat(),
                  "h": RNG.randint(0, 50), "v": True, "s": "positive" if rating >= 4 else ("neutral" if rating == 3 else "negative")})
+        # Connected operational records make multi-table joins meaningful.
+        for name, country in [("North America", "USA"), ("Europe", "Germany"), ("Asia Pacific", "India")]:
+            conn.execute(text(f"INSERT INTO {T['regions']} (region_name,country) VALUES (:n,:c)"), {"n": name, "c": country})
+        region_ids = [r[0] for r in conn.execute(text(f"SELECT region_id FROM {T['regions']}"))]
+        for name in ("Sales", "Operations", "Support"):
+            conn.execute(text(f"INSERT INTO {T['deps']} (department_name,region_id) VALUES (:n,:r)"), {"n": name, "r": RNG.choice(region_ids)})
+        dep_ids = [r[0] for r in conn.execute(text(f"SELECT department_id FROM {T['deps']}"))]
+        for i in range(12): conn.execute(text(f"INSERT INTO {T['employees']} (employee_name,department_id,hire_date) VALUES (:n,:d,:h)"), {"n": f"Employee {i+1}", "d": RNG.choice(dep_ids), "h": (base + dt.timedelta(days=i*30)).isoformat()})
+        for i, brand in enumerate(BRANDS[:5]): conn.execute(text(f"INSERT INTO {T['suppliers']} (supplier_name,region_id) VALUES (:n,:r)"), {"n": f"{brand} Supply", "r": RNG.choice(region_ids)})
+        supplier_ids = [r[0] for r in conn.execute(text(f"SELECT supplier_id FROM {T['suppliers']}"))]
+        for pid, price in prod_ids: conn.execute(text(f"INSERT INTO {T['supplier_products']} (supplier_id,product_id,supplier_cost) VALUES (:s,:p,:c)"), {"s": RNG.choice(supplier_ids), "p": pid, "c": round(price * .55, 2)})
+        for name in ("East DC", "West DC", "Europe DC"):
+            conn.execute(text(f"INSERT INTO {T['warehouses']} (warehouse_name,region_id) VALUES (:n,:r)"), {"n": name, "r": RNG.choice(region_ids)})
+        warehouse_ids = [r[0] for r in conn.execute(text(f"SELECT warehouse_id FROM {T['warehouses']}"))]
+        for pid, _ in prod_ids:
+            conn.execute(text(f"INSERT INTO {T['inventory']} (warehouse_id,product_id,quantity_on_hand,reorder_level) VALUES (:w,:p,:q,:l)"), {"w": RNG.choice(warehouse_ids), "p": pid, "q": RNG.randint(10, 200), "l": RNG.randint(5, 30)})
+        for oid, cust, od, total, status in order_ids:
+            conn.execute(text(f"INSERT INTO {T['invoices']} (order_id,invoice_date,amount_due,status) VALUES (:o,:d,:a,:s)"), {"o": oid, "d": od.isoformat(), "a": total, "s": "paid" if status not in ("cancelled",) else "void"})
+            if status in ("shipped", "delivered", "returned"): conn.execute(text(f"INSERT INTO {T['shipments']} (order_id,warehouse_id,shipped_at,status) VALUES (:o,:w,:d,:s)"), {"o": oid, "w": RNG.choice(warehouse_ids), "d": od.isoformat(), "s": "delivered" if status != "shipped" else "in_transit"})
+        item_ids = [r[0] for r in conn.execute(text(f"SELECT order_item_id FROM {T['items']} WHERE returned_quantity > 0"))]
+        for item_id in item_ids: conn.execute(text(f"INSERT INTO {T['returns']} (order_id,order_item_id,return_date,status) SELECT order_id,:i,:d,'received' FROM {T['items']} WHERE order_item_id=:i"), {"i": item_id, "d": today.isoformat()})
+        for name, budget in [("Spring Launch", 25000), ("VIP Retention", 12000)]: conn.execute(text(f"INSERT INTO {T['campaigns']} (campaign_name,start_date,budget) VALUES (:n,:d,:b)"), {"n": name, "d": base.isoformat(), "b": budget})
+        campaign_ids = [r[0] for r in conn.execute(text(f"SELECT campaign_id FROM {T['campaigns']}"))]
+        for cid in campaign_ids:
+            for customer_id in RNG.sample(cust_ids, min(30, len(cust_ids))): conn.execute(text(f"INSERT INTO {T['campaign_members']} (campaign_id,customer_id,joined_at,converted) VALUES (:c,:u,:d,:v)"), {"c": cid, "u": customer_id, "d": base.isoformat(), "v": RNG.random() < .25})
+        for customer_id in RNG.sample(cust_ids, min(40, len(cust_ids))): conn.execute(text(f"INSERT INTO {T['tickets']} (customer_id,order_id,opened_at,status) VALUES (:c,:o,:d,:s)"), {"c": customer_id, "o": RNG.choice(order_ids)[0], "d": today.isoformat(), "s": RNG.choice(["open", "pending", "closed"])})
+        for name, price in [("Basic", 9), ("Pro", 29), ("Enterprise", 99)]: conn.execute(text(f"INSERT INTO {T['plans']} (plan_name,monthly_price) VALUES (:n,:p)"), {"n": name, "p": price})
+        plan_ids = [r[0] for r in conn.execute(text(f"SELECT plan_id FROM {T['plans']}"))]
+        for customer_id in RNG.sample(cust_ids, min(50, len(cust_ids))): conn.execute(text(f"INSERT INTO {T['subscriptions']} (customer_id,plan_id,started_at,status) VALUES (:c,:p,:d,:s)"), {"c": customer_id, "p": RNG.choice(plan_ids), "d": base.isoformat(), "s": RNG.choice(["active", "active", "cancelled"])})
+        for name, service in [("Swift Logistics", "shipping"), ("CloudPay", "payments")]: conn.execute(text(f"INSERT INTO {T['vendors']} (vendor_name,service_type) VALUES (:n,:s)"), {"n": name, "s": service})
     print(f"Seeded scale={scale}: {n_cust} customers, {n_prod} products, {n_orders} orders -> local_db {list(T.values())} on {eng.url!r}")
 
 

@@ -20,7 +20,8 @@ from .auth import require_role
 from .config import get_settings
 from .graph import get_schema_snapshot, run_question
 from .logging_config import log, setup_logging
-from .schemas import ChatRequest, ChatResponse, ChartSpec, ClarifyRequest, ConversationHistory
+from .schemas import (ChatRequest, ChatResponse, ChartSpec, ClarifyRequest, ConversationHistory,
+                      MutationPreviewRequest, MutationPreviewResponse, MutationConfirmRequest, MutationConfirmResponse)
 
 settings = get_settings()
 setup_logging(settings.LOG_LEVEL)
@@ -39,7 +40,7 @@ app.add_middleware(
 @app.middleware("http")
 async def api_auth(request, call_next):
     """Protect data APIs while keeping health checks available to orchestrators."""
-    if request.url.path == "/healthz":
+    if request.url.path in {"/healthz", "/readyz"}:
         return await call_next(request)
     try:
         roles = ("admin",) if request.url.path.startswith("/api/dashboard") else ("analyst", "admin")
@@ -77,9 +78,74 @@ def _audit(cid: str, request_text: str, result: Optional[dict], started: float, 
         log.exception("request audit logging failed")
 
 
+def _clarification_prompt(original_question: str, questions: list[str], prior_answers: str, new_answers: str) -> str:
+    """Build stable context for a follow-up without recursively nesting prompts."""
+    parts = [f"Original request: {original_question}"]
+    if prior_answers:
+        parts.append(f"Earlier clarification: {prior_answers}")
+    if questions:
+        parts.append("Outstanding questions: " + "; ".join(questions))
+    parts.append(f"User clarification: {new_answers}")
+    return "\n".join(parts)
+
+
 @app.get("/healthz")
 def healthz():
-    return {"status": "ok"}
+    runtime = get_settings()
+    return {
+        "status": "ok",
+        "llm_configured": bool(runtime.GOOGLE_API_KEY),
+        "offline_fallback_enabled": runtime.ALLOW_DETERMINISTIC_FALLBACK,
+    }
+
+
+@app.get("/readyz")
+def readyz():
+    """Expose the otherwise confusing no-LLM state before a user sends a query."""
+    runtime = get_settings()
+    if not runtime.GOOGLE_API_KEY and not runtime.ALLOW_DETERMINISTIC_FALLBACK:
+        raise HTTPException(
+            503,
+            "Text-to-SQL is not configured. Set GOOGLE_API_KEY, or enable the limited deterministic fallback for demo use.",
+        )
+    return {"status": "ready", "mode": "llm" if runtime.GOOGLE_API_KEY else "limited_offline"}
+
+
+def _require_mutation_admin(request) -> None:
+    """Writes are opt-in and require real API-key admin authentication."""
+    if not settings.ENABLE_MUTATIONS:
+        raise HTTPException(403, "Mutations are disabled. Set ENABLE_MUTATIONS=true to enable the reviewed admin workflow.")
+    if not settings.AUTH_ENABLED or getattr(request.state, "role", None) != "admin":
+        raise HTTPException(403, "Mutations require AUTH_ENABLED=true and an admin X-API-Key.")
+
+
+@app.post("/api/admin/mutations/preview", response_model=MutationPreviewResponse)
+def preview_mutation(req: MutationPreviewRequest, request):
+    """Generate and validate a mutation proposal; it does not execute SQL."""
+    _require_mutation_admin(request)
+    from .mutations import preview_mutation as build_preview
+    try:
+        proposal = build_preview(req.instruction)
+        return MutationPreviewResponse(proposal_id=proposal.proposal_id, instruction=proposal.instruction,
+                                       sql=proposal.sql, summary=proposal.summary, risk=proposal.risk,
+                                       expires_at=proposal.expires_at.isoformat())
+    except ValueError as exc:
+        raise HTTPException(400, str(exc))
+
+
+@app.post("/api/admin/mutations/confirm", response_model=MutationConfirmResponse)
+def confirm_mutation(req: MutationConfirmRequest, request):
+    """Apply exactly one previously reviewed proposal after explicit approval."""
+    _require_mutation_admin(request)
+    from .mutations import apply_mutation
+    try:
+        proposal = apply_mutation(req.proposal_id, req.confirmation)
+        reset_schema_cache()
+        return MutationConfirmResponse(proposal_id=proposal.proposal_id, status=proposal.status,
+                                       rows_affected=getattr(proposal, "rows_affected", None),
+                                       message="Mutation applied after explicit admin confirmation.")
+    except ValueError as exc:
+        raise HTTPException(400, str(exc))
 
 
 @app.get("/api/schema")
@@ -119,9 +185,8 @@ def chat(req: ChatRequest):
     pending = store.pop_pending(cid)
     question = req.message
     if pending.get("questions"):
-        question = (f"Original request: {pending.get('original_question', '')}\n"
-                    f"Outstanding questions: {'; '.join(pending['questions'])}\n"
-                    f"User clarification: {req.message}")
+        question = _clarification_prompt(pending.get("original_question", ""), pending["questions"],
+                                         pending.get("clarification_context", ""), req.message)
     store.append(cid, "user", req.message)
     try:
         result = run_question(question, hist)
@@ -130,7 +195,9 @@ def chat(req: ChatRequest):
         _audit(cid, req.message, None, started, str(e))
         raise HTTPException(500, f"workflow failed: {e}")
     if result.get("classification") == "ambiguous":
-        store.set_pending(cid, result.get("clarification_questions", []), question, result.get("query_spec"))
+        store.set_pending(cid, result.get("clarification_questions", []),
+                          pending.get("original_question") or req.message, result.get("query_spec"),
+                          pending.get("clarification_context", "") + ("\n" if pending.get("clarification_context") else "") + req.message)
     store.append(cid, "assistant", result.get("answer", ""), result)
     _audit(cid, req.message, result, started)
     return _to_response(cid, result)
@@ -142,9 +209,9 @@ def clarify(req: ClarifyRequest):
     cid = store.get_or_create(req.conversation_id)
     pending = store.pop_pending(cid)
     hist = store.history(cid)
-    combined = (f"Original request: {pending.get('original_question', '')}. "
-                f"Outstanding questions: {'; '.join(pending.get('questions', []))}. "
-                f"User answers: {req.answers}" if pending.get("questions") else req.answers)
+    combined = (_clarification_prompt(pending.get("original_question", ""), pending.get("questions", []),
+                                      pending.get("clarification_context", ""), req.answers)
+                if pending.get("questions") else req.answers)
     store.append(cid, "user", req.answers)
     try:
         result = run_question(combined, hist)
@@ -153,7 +220,10 @@ def clarify(req: ClarifyRequest):
         _audit(cid, req.answers, None, started, str(e))
         raise HTTPException(500, f"workflow failed: {e}")
     if result.get("classification") == "ambiguous":
-        store.set_pending(cid, result.get("clarification_questions", []), combined, result.get("query_spec"))
+        prior = pending.get("clarification_context", "")
+        all_answers = prior + ("\n" if prior else "") + req.answers
+        store.set_pending(cid, result.get("clarification_questions", []),
+                          pending.get("original_question", ""), result.get("query_spec"), all_answers)
     store.append(cid, "assistant", result.get("answer", ""), result)
     _audit(cid, req.answers, result, started)
     return _to_response(cid, result)
@@ -171,8 +241,8 @@ def chat_stream(req: ChatRequest):
     cid = store.get_or_create(req.conversation_id)
     hist = store.history(cid)
     pending = store.pop_pending(cid)
-    question = (f"Original request: {pending.get('original_question', '')}\n"
-                f"Outstanding: {'; '.join(pending.get('questions', []))}\nClarification: {req.message}"
+    question = (_clarification_prompt(pending.get("original_question", ""), pending.get("questions", []),
+                                      pending.get("clarification_context", ""), req.message)
                 if pending.get("questions") else req.message)
     store.append(cid, "user", req.message)
 
@@ -188,7 +258,11 @@ def chat_stream(req: ChatRequest):
             yield send("error", {"message": str(e)})
             return
         if result.get("classification") == "ambiguous":
-            store.set_pending(cid, result.get("clarification_questions", []), question, result.get("query_spec"))
+            prior = pending.get("clarification_context", "")
+            all_answers = prior + ("\n" if prior else "") + req.message
+            store.set_pending(cid, result.get("clarification_questions", []),
+                              pending.get("original_question") or req.message,
+                              result.get("query_spec"), all_answers)
             yield send("status", {"stage": "clarification_needed"})
         else:
             yield send("status", {"stage": "answering"})

@@ -58,7 +58,30 @@ def build_fallback_sql(question: str, schema_context: str = "") -> str:
         _tbl("orders"), _tbl("order_items"), _tbl("customers"), _tbl("products"),
         _tbl("categories"), _tbl("payments"), _tbl("product_reviews"),
     )
+    INVENTORY, WAREHOUSES = _tbl("inventory"), _tbl("warehouses")
     LIKE = _like()
+
+    # Do not let the generic customer/category branches turn a specific
+    # request into a plausible but unrelated listing or revenue report.
+    if has("how many customer", "customer count") and has("sign up", "signed up", "signup", "joined"):
+        this_month = _current_month_filter("c.signup_date") if "this month" in q else _date_filter(q, "c.signup_date")
+        return _limit(f"SELECT COUNT(*) AS customer_count FROM {CUST} c WHERE 1=1{this_month}")
+
+    if has("product") and has("list", "show", "all") and has("categor") and not has("revenue", "sales", "gmv"):
+        return _limit(f"""SELECT cat.category_name, p.product_id, p.product_name, p.brand, p.unit_price
+FROM {PROD} p JOIN {CATS} cat ON cat.category_id = p.category_id
+WHERE p.is_active = TRUE ORDER BY cat.category_name, p.product_name""")
+
+    # Names are permitted display fields; contact details remain restricted.
+    initial_match = re.search(r"\b(?:start|begin)s?\s+with\s+['\"]?([a-z])", q)
+    if has("customer", "user") and has("name") and initial_match:
+        initial = initial_match.group(1)
+        return _limit(f"SELECT c.customer_id, c.first_name, c.last_name FROM {CUST} c WHERE LOWER(c.first_name) {LIKE} '{initial}%' ORDER BY c.first_name, c.last_name")
+
+    if has("inventory value", "stock value"):
+        if has("warehouse"):
+            return _limit(f"SELECT w.warehouse_name, SUM(i.quantity_on_hand * p.cost_price) AS inventory_value FROM {INVENTORY} i JOIN {WAREHOUSES} w ON w.warehouse_id=i.warehouse_id JOIN {PROD} p ON p.product_id=i.product_id GROUP BY w.warehouse_name ORDER BY inventory_value DESC")
+        return _limit(f"SELECT SUM(i.quantity_on_hand * p.cost_price) AS inventory_value FROM {INVENTORY} i JOIN {PROD} p ON p.product_id=i.product_id")
 
     # Detailed order listing.  This must precede generic order/customer rules.
     if has("order") and has("customer name") and has("product name") and has("payment status"):
@@ -92,14 +115,27 @@ SUM(oi.quantity) AS units_sold
 FROM {ITEMS} oi JOIN {PROD} p ON p.product_id = oi.product_id
 GROUP BY p.product_name HAVING SUM(oi.quantity) > 0 ORDER BY return_rate DESC LIMIT {n}""", n)
 
+    if has("return rate", "refund rate") and has("categor"):
+        return _limit(f"""SELECT cat.category_name,
+SUM(oi.returned_quantity) * 1.0 / NULLIF(SUM(oi.quantity), 0) AS return_rate
+FROM {ITEMS} oi JOIN {PROD} p ON p.product_id = oi.product_id
+JOIN {CATS} cat ON cat.category_id = p.category_id
+GROUP BY cat.category_name HAVING SUM(oi.quantity) > 0 ORDER BY return_rate DESC""")
+
     # Rating by category must precede generic category/revenue matching.
     if has("rating", "review", "stars") and has("categor"):
         return _limit(f"""SELECT cat.category_name, AVG(r.rating) AS avg_rating, COUNT(*) AS reviews
 FROM {REV} r JOIN {PROD} p ON p.product_id = r.product_id
 JOIN {CATS} cat ON cat.category_id = p.category_id
 GROUP BY cat.category_name ORDER BY avg_rating DESC""")
+    if has("net of returns", "net revenue", "revenue after returns") and has("categor"):
+        return _limit(f"""SELECT cat.category_name,
+SUM((oi.quantity - oi.returned_quantity) * oi.unit_price * (1 - oi.discount_pct)) AS net_revenue_after_returns
+FROM {ITEMS} oi JOIN {PROD} p ON p.product_id = oi.product_id
+JOIN {CATS} cat ON cat.category_id = p.category_id
+GROUP BY cat.category_name ORDER BY net_revenue_after_returns DESC""")
     # Category revenue breakdown (before generic revenue-total so "revenue by category" groups correctly)
-    if has("categor") and has("revenue", "sales", "gmv", "total", "by", "breakdown"):
+    if has("categor") and has("revenue", "sales", "gmv", "turnover"):
         return _limit(f"""SELECT cat.category_name, SUM(oi.quantity * oi.unit_price * (1 - oi.discount_pct)) AS revenue
 FROM {ITEMS} oi JOIN {PROD} p ON p.product_id = oi.product_id
 JOIN {CATS} cat ON cat.category_id = p.category_id
@@ -129,7 +165,15 @@ FROM {ORD} o JOIN {ITEMS} oi ON oi.order_id = o.order_id
 JOIN {PROD} p ON p.product_id = oi.product_id
 WHERE 1=1{where}
 GROUP BY p.brand ORDER BY revenue DESC""")
-    if has("revenue", "sales", "gmv") and has("product") and has("by", "breakdown", "each"):
+    # Ranking must precede the generic product breakdown.  The latter used to
+    # match any question containing the word "by", including "Top 5 products
+    # by revenue", and silently returned 100 rows instead of five.
+    if has("top") and has("product") and has("revenue", "sales", "gmv", "turnover"):
+        n = _top_n(q, 5)
+        return _limit(f"""SELECT p.product_name, SUM(oi.quantity * oi.unit_price * (1 - oi.discount_pct)) AS revenue
+FROM {ITEMS} oi JOIN {PROD} p ON p.product_id = oi.product_id
+GROUP BY p.product_name ORDER BY revenue DESC LIMIT {n}""", n)
+    if has("revenue", "sales", "gmv") and has("product") and any(x in q for x in ("by product", "per product", "each product", "product breakdown")):
         where = _date_filter(q, "o.order_date")
         return _limit(f"""SELECT p.product_name, SUM(oi.quantity * oi.unit_price * (1 - oi.discount_pct)) AS revenue
 FROM {ORD} o JOIN {ITEMS} oi ON oi.order_id = o.order_id
@@ -137,12 +181,6 @@ JOIN {PROD} p ON p.product_id = oi.product_id
 WHERE 1=1{where}
 GROUP BY p.product_name ORDER BY revenue DESC""")
 
-    # Top products by revenue
-    if has("top") and has("product"):
-        n = _top_n(q, 5)
-        return _limit(f"""SELECT p.product_name, SUM(oi.quantity * oi.unit_price * (1 - oi.discount_pct)) AS revenue
-FROM {ITEMS} oi JOIN {PROD} p ON p.product_id = oi.product_id
-GROUP BY p.product_name ORDER BY revenue DESC LIMIT {n}""", n)
     # AOV by segment
     if has("average order", "aov") and has("segment"):
         return _limit(f"""SELECT c.customer_segment, AVG(o.total_amount) AS avg_order_value, COUNT(*) AS orders
@@ -167,7 +205,14 @@ GROUP BY 1 ORDER BY 1""")
 SUM(o.total_amount) AS revenue FROM {ORD} o GROUP BY 1 ORDER BY 1""")
     if has("revenue", "sales", "gmv", "total"):
         where = _date_filter(q, "o.order_date")
-        return _limit(f"""SELECT SUM(oi.quantity * oi.unit_price * (1 - oi.discount_pct)) AS total_revenue,
+        if "excluding cancelled" in q or "exclude cancelled" in q:
+            where += " AND o.status <> 'cancelled'"
+        revenue_expression = "SUM(oi.quantity * oi.unit_price * (1 - oi.discount_pct))"
+        revenue_name = "total_revenue"
+        if has("net of returns", "net revenue", "revenue after returns"):
+            revenue_expression = "SUM((oi.quantity - oi.returned_quantity) * oi.unit_price * (1 - oi.discount_pct))"
+            revenue_name = "net_revenue_after_returns"
+        return _limit(f"""SELECT {revenue_expression} AS {revenue_name},
 COUNT(DISTINCT o.order_id) AS orders
 FROM {ORD} o JOIN {ITEMS} oi ON oi.order_id = o.order_id{where}""")
     # Order count / AOV
@@ -188,7 +233,7 @@ FROM {ORD} o JOIN {ITEMS} oi ON oi.order_id = o.order_id{where}""")
         where = _date_filter(q, "o.order_date")
         return _limit(f"SELECT o.status, COUNT(*) AS order_count FROM {ORD} o WHERE 1=1{where} GROUP BY o.status ORDER BY order_count DESC")
     # Customers
-    if has("customer") and has("top", "best", "most", "lifetime", "spend"):
+    if has("customer", "user") and has("top", "best", "most", "lifetime", "spend"):
         n = _top_n(q, 5)
         country = ", c.country" if "country" in q else ""
         country_group = ", c.country" if "country" in q else ""
@@ -197,9 +242,9 @@ FROM {ORD} o JOIN {ITEMS} oi ON oi.order_id = o.order_id{where}""")
 {country}
 FROM {CUST} c JOIN {ORD} o ON o.customer_id = c.customer_id WHERE 1=1{where}
 GROUP BY c.customer_id, c.first_name, c.last_name{country_group} ORDER BY lifetime_spend DESC LIMIT {n}""", n)
-    if has("customer") and has("country", "by country", "segment"):
+    if has("customer", "user") and has("country", "by country", "segment"):
         return _limit(f"SELECT c.country, COUNT(*) AS customers FROM {CUST} c GROUP BY 1 ORDER BY customers DESC")
-    if has("customer"):
+    if has("customer", "user"):
         return _limit(f"SELECT c.customer_id, c.first_name, c.last_name, c.country, c.customer_segment FROM {CUST} c ORDER BY c.signup_date DESC")
     # Category breakdown
     if has("categor"):
@@ -274,6 +319,13 @@ def _date_filter(q: str, col: str) -> str:
         y = m3.group(1)
         return f" AND {col} >= '{y}-01-01' AND {col} < '{int(y)+1}-01-01'"
     return ""
+
+
+def _current_month_filter(col: str) -> str:
+    """Portable current-calendar-month predicate for the offline templates."""
+    if _is_sqlite():
+        return f" AND {col} >= date('now', 'start of month') AND {col} < date('now', 'start of month', '+1 month')"
+    return f" AND {col} >= date_trunc('month', CURRENT_DATE) AND {col} < date_trunc('month', CURRENT_DATE) + INTERVAL '1 month'"
 
 
 def repair_fallback_sql(bad_sql: str, error: str) -> str:

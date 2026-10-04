@@ -1,0 +1,103 @@
+# Expanded evaluation corpus (100 natural-language prompts).  Harnesses may add
+# golden_sql/golden_result assertions per deployment; categories support slices.
+questions:
+  - {id: E001, category: simple, question: "How many customers signed up this month?"}
+  - {id: E002, category: simple, question: "List active products by category"}
+  - {id: E003, category: simple, question: "Show delivered orders yesterday"}
+  - {id: E004, category: aggregation, question: "What is total revenue?"}
+  - {id: E005, category: aggregation, question: "What is average order value?"}
+  - {id: E006, category: aggregation, question: "Count failed payments by method"}
+  - {id: E007, category: date, question: "Revenue by month for the last 12 months"}
+  - {id: E008, category: date, question: "Orders by week in 2025"}
+  - {id: E009, category: join, question: "Revenue by product category"}
+  - {id: E010, category: join, question: "Top 10 customers by lifetime value"}
+  - {id: E011, category: join, question: "Average rating by category"}
+  - {id: E012, category: join, question: "Products with their suppliers"}
+  - {id: E013, category: join, question: "Inventory value by warehouse"}
+  - {id: E014, category: join, question: "Inventory value by warehouse region"}
+  - {id: E015, category: join, question: "Orders with invoice status and payment status"}
+  - {id: E016, category: join, question: "Shipments by warehouse and status"}
+  - {id: E017, category: join, question: "Return rate by product category"}
+  - {id: E018, category: join, question: "Open support tickets by customer segment"}
+  - {id: E019, category: join, question: "Campaign conversion rate by campaign"}
+  - {id: E020, category: join, question: "Active subscriptions by plan"}
+  - {id: E021, category: ranking, question: "Top 5 products by revenue"}
+  - {id: E022, category: ranking, question: "Top 3 warehouses by stock value"}
+  - {id: E023, category: ranking, question: "Rank suppliers by supplied product count"}
+  - {id: E024, category: ranking, question: "Which customers have the most support tickets?"}
+  - {id: E025, category: ranking, question: "Top categories by returned units"}
+  - {id: E026, category: cte, question: "Customers whose spend exceeds average customer spend"}
+  - {id: E027, category: cte, question: "Products with revenue above their category average"}
+  - {id: E028, category: subquery, question: "Orders above the average order total"}
+  - {id: E029, category: window, question: "Rank monthly revenue within each year"}
+  - {id: E030, category: window, question: "Running revenue total by month"}
+  - {id: E031, category: having, question: "Categories with more than 20 orders"}
+  - {id: E032, category: having, question: "Customers with at least three completed orders"}
+  - {id: E033, category: conditional, question: "Payment success and failure counts by month"}
+  - {id: E034, category: conditional, question: "Delivered versus cancelled order count by country"}
+  - {id: E035, category: null, question: "Orders without a shipment"}
+  - {id: E036, category: null, question: "Support tickets without a related order"}
+  - {id: E037, category: null, question: "Products with no reviews"}
+  - {id: E038, category: metrics, question: "How many active customers do we have?"}
+  - {id: E039, category: metrics, question: "Show completed orders by month"}
+  - {id: E040, category: metrics, question: "What is our inventory value?"}
+  - {id: E041, category: metrics, question: "Customer lifetime value by segment"}
+  - {id: E042, category: metrics, question: "How many returned orders were received?"}
+  - {id: E043, category: filters, question: "Revenue for Electronics in 2025"}
+  - {id: E044, category: filters, question: "Orders from customers in Germany"}
+  - {id: E045, category: filters, question: "Failed payments last quarter"}
+  - {id: E046, category: filters, question: "Subscriptions cancelled this year"}
+  - {id: E047, category: filters, question: "Open tickets from premium customers"}
+  - {id: E048, category: filters, question: "Low stock products below reorder level"}
+  - {id: E049, category: filters, question: "Invoices that are still unpaid"}
+  - {id: E050, category: filters, question: "Shipments in transit"}
+  - {id: E051, category: comparison, question: "Compare revenue this month with last month"}
+  - {id: E052, category: comparison, question: "Compare return rates by warehouse"}
+  - {id: E053, category: comparison, question: "Compare campaign budget and conversions"}
+  - {id: E054, category: trends, question: "Monthly new subscriptions trend"}
+  - {id: E055, category: trends, question: "Weekly support ticket trend"}
+  - {id: E056, category: trends, question: "Monthly shipment volume trend"}
+  - {id: E057, category: multi_step, question: "Which supplier provides products with the highest return rate?"}
+  - {id: E058, category: multi_step, question: "Which warehouse holds the most inventory for top revenue products?"}
+  - {id: E059, category: multi_step, question: "Which campaign attracted customers with highest lifetime spend?"}
+  - {id: E060, category: multi_step, question: "Which plan has the highest support tickets per subscriber?"}
+  - {id: E061, category: edge, question: "Count distinct orders, not order lines, by category"}
+  - {id: E062, category: edge, question: "Show products whose returned quantity is zero"}
+  - {id: E063, category: edge, question: "Revenue excluding cancelled orders"}
+  - {id: E064, category: edge, question: "Customers with no orders"}
+  - {id: E065, category: edge, question: "Orders that have multiple payments"}
+  - {id: E066, category: edge, question: "Average invoice amount excluding void invoices"}
+  - {id: E067, category: edge, question: "Products with null cost price"}
+  - {id: E068, category: edge, question: "Campaign members who did not convert"}
+  - {id: E069, category: edge, question: "Revenue by country including countries with no orders"}
+  - {id: E070, category: edge, question: "Returns with missing return reason"}
+  - {id: E071, category: clarify, question: "Show recent sales", expect_class: ambiguous}
+  - {id: E072, category: clarify, question: "Who are the top customers?", expect_class: ambiguous}
+  - {id: E073, category: clarify, question: "Compare performance", expect_class: ambiguous}
+  - {id: E074, category: clarify, question: "Show inventory", expect_class: ambiguous}
+  - {id: E075, category: clarify, question: "What campaign worked best?", expect_class: ambiguous}
+  - {id: E076, category: clarify, question: "Show subscription trends", expect_class: ambiguous}
+  - {id: E077, category: clarify, question: "Which warehouse is best?", expect_class: ambiguous}
+  - {id: E078, category: clarify, question: "Give me supplier performance", expect_class: ambiguous}
+  - {id: E079, category: irrelevant, question: "Tell me a joke", expect_class: unrelated}
+  - {id: E080, category: irrelevant, question: "What is the capital of France?", expect_class: unrelated}
+  - {id: E081, category: unsupported, question: "Delete cancelled orders", expect_class: unsupported}
+  - {id: E082, category: unsupported, question: "Update all plan prices", expect_class: unsupported}
+  - {id: E083, category: unsupported, question: "Forecast next year revenue", expect_class: unsupported}
+  - {id: E084, category: unsupported, question: "Create a new warehouse", expect_class: unsupported}
+  - {id: E085, category: schema, question: "How many tables are available?", expect_class: schema_request}
+  - {id: E086, category: schema, question: "Show relationships for inventory", expect_class: schema_request}
+  - {id: E087, category: simple, question: "List all plans and monthly prices"}
+  - {id: E088, category: simple, question: "List regions"}
+  - {id: E089, category: aggregation, question: "Count employees by department"}
+  - {id: E090, category: aggregation, question: "Average supplier cost by supplier"}
+  - {id: E091, category: join, question: "Employee count by department region"}
+  - {id: E092, category: join, question: "Customer subscriptions with plan name"}
+  - {id: E093, category: join, question: "Ticket status by plan"}
+  - {id: E094, category: join, question: "Invoice total by customer country"}
+  - {id: E095, category: date, question: "Returns by month"}
+  - {id: E096, category: date, question: "Campaigns started in 2025"}
+  - {id: E097, category: ranking, question: "Top 5 customers by number of orders"}
+  - {id: E098, category: conditional, question: "Count active and cancelled subscriptions by plan"}
+  - {id: E099, category: null, question: "Orders without invoices"}
+  - {id: E100, category: multi_step, question: "Show top suppliers by inventory value of their products"}

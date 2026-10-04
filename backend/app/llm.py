@@ -40,25 +40,30 @@ def _gemini_model():
 def generate_sql_with_llm(question: str, schema_context: str, history: Optional[List[dict]] = None) -> str:
     """Return a single SELECT statement (no markdown). Falls back to template builder."""
     if not has_llm_key():
-        from .fallback_sql import build_fallback_sql
-        return build_fallback_sql(question, schema_context)
+        if get_settings().ALLOW_DETERMINISTIC_FALLBACK:
+            from .fallback_sql import build_fallback_sql
+            return build_fallback_sql(question, schema_context)
+        return ""
     try:
         enable_langsmith()
         llm = _gemini_model()
+        settings = get_settings()
+        dialect = "SQLite" if settings.DATABASE_URL.startswith("sqlite") else "PostgreSQL"
+        prefix = settings.TABLE_PREFIX or ""
+        like_rule = "Use LIKE for case-insensitive name matches." if dialect == "SQLite" else "Use ILIKE for case-insensitive name matches."
         hist = ""
         if history:
             hist = "\n".join(f"{m.get('role')}: {m.get('content')}" for m in history[-6:])
-        prompt = f"""You are a Text-to-SQL expert for PostgreSQL. Output ONLY one valid SELECT statement, no markdown, no explanation.
+        prompt = f"""You are a Text-to-SQL expert for {dialect}. Output ONLY one valid SELECT statement, no markdown, no explanation.
 
 Rules:
 - Use ONLY tables/columns from the schema context below. Never invent columns.
-  All tables are prefixed dg_ and live in the local_db SQLite/Postgres store
-  (e.g. dg_orders, dg_customers, dg_products, dg_order_items, dg_payments,
-  dg_product_reviews, dg_categories). Always use the full dg_ names.
+  All tables are prefixed {prefix!r}; always use their full physical names from the schema context.
 - Single SELECT statement, must end with LIMIT (<=500).
 - Prefer explicit JOINs following the JOINS AVAILABLE edges.
-- Use ILIKE for case-insensitive name matches with parameters as literals (escape single quotes).
+- {like_rule} Escape single quotes in SQL string literals.
 - Date columns: order_date, payment_date, review_date, signup_date (YYYY-MM-DD).
+- For relative periods such as “last year”, “last month”, and “last N days”, use the database's current-date functions rather than a hard-coded calendar year.
 - Status values: dg_orders.status in ('pending','processing','shipped','delivered','cancelled','returned'); dg_payments.status in ('succeeded','failed','refunded','pending').
 - Never generate INSERT/UPDATE/DELETE/DDL. Read-only SELECT only.
 
@@ -81,8 +86,10 @@ SQL:"""
         return sql
     except Exception as e:
         log.warning("Gemini SQL generation failed, using fallback: %s", e)
-        from .fallback_sql import build_fallback_sql
-        return build_fallback_sql(question, schema_context)
+        if get_settings().ALLOW_DETERMINISTIC_FALLBACK:
+            from .fallback_sql import build_fallback_sql
+            return build_fallback_sql(question, schema_context)
+        return ""
 
 
 def summarize_with_llm(question: str, columns: List[str], rows: List[dict]) -> str:
@@ -121,7 +128,8 @@ def repair_sql_with_llm(question: str, bad_sql: str, error: str, schema_context:
     try:
         enable_langsmith()
         llm = _gemini_model()
-        prompt = f"""Fix this PostgreSQL SELECT so it executes. Output ONLY the fixed SELECT, no markdown.
+        dialect = "SQLite" if get_settings().DATABASE_URL.startswith("sqlite") else "PostgreSQL"
+        prompt = f"""Fix this {dialect} SELECT so it executes. Output ONLY the fixed SELECT, no markdown.
 
 Schema:
 {schema_context}

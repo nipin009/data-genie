@@ -54,3 +54,23 @@ def test_rejects_pg_sleep():
 def test_allows_boolean_predicates_but_restricts_pii_columns():
     assert validate_sql("SELECT order_id FROM dg_orders WHERE status = 'pending' AND total_amount > 10", KNOWN).ok
     assert not validate_sql("SELECT email FROM dg_customers", KNOWN).ok
+
+
+def test_rejects_wildcard_projections_but_allows_count_star():
+    assert not validate_sql("SELECT * FROM dg_customers", KNOWN).ok
+    assert not validate_sql("SELECT c.* FROM dg_customers c", KNOWN).ok
+    assert validate_sql("SELECT COUNT(*) AS customers FROM dg_customers", KNOWN).ok
+
+
+def test_allows_reviewed_analytic_constructs():
+    ranked = "SELECT order_id, RANK() OVER (ORDER BY total_amount DESC) AS position FROM dg_orders"
+    conditional = "SELECT CASE WHEN status = 'pending' THEN 1 ELSE 0 END AS pending_flag FROM dg_orders"
+    assert validate_sql(ranked, KNOWN).ok
+    assert validate_sql(conditional, KNOWN).ok
+
+
+def test_rejects_non_fk_join_when_join_graph_is_available():
+    edges = [("dg_orders", "customer_id", "dg_customers", "customer_id")]
+    bad = validate_sql("SELECT o.order_id FROM dg_orders o JOIN dg_customers c ON o.order_id = c.customer_id", KNOWN, join_edges=edges)
+    good = validate_sql("SELECT o.order_id FROM dg_orders o JOIN dg_customers c ON o.customer_id = c.customer_id", KNOWN, join_edges=edges)
+    assert not bad.ok and good.ok

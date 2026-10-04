@@ -1,7 +1,7 @@
 "use client";
 import { useEffect, useRef, useState } from "react";
 import type { ChatMessage, ChatResponsePayload, HistoryMessagePayload } from "../lib/types";
-import { getHistory, postChat, streamChat } from "../lib/api";
+import { getHistory, postChat, postClarify, streamChat } from "../lib/api";
 import ChatMessageView from "../components/ChatMessage";
 import DashboardPanel from "../components/DashboardPanel";
 
@@ -45,6 +45,7 @@ export default function ChatPage() {
   const [error, setError] = useState<string | null>(null);
   const [useStream, setUseStream] = useState(true);
   const [dashboardOpen, setDashboardOpen] = useState(false);
+  const [clarification, setClarification] = useState<string[]>([]);
   const bottom = useRef<HTMLDivElement>(null);
 
   useEffect(() => { bottom.current?.scrollIntoView({ behavior: "smooth" }); }, [messages, stage]);
@@ -53,7 +54,10 @@ export default function ChatPage() {
     setError(null); setLoading(true); setStage("restoring history");
     try {
       const history = await getHistory(conversationId);
-      setMessages(history.map(historyToMsg));
+      const restored = history.map(historyToMsg);
+      setMessages(restored);
+      const latest = restored[restored.length - 1];
+      setClarification(latest?.classification === "ambiguous" ? (latest.clarificationQuestions || []) : []);
       setConvId(conversationId);
       localStorage.setItem(CONVERSATION_STORAGE_KEY, conversationId);
       setDashboardOpen(false);
@@ -76,12 +80,18 @@ export default function ChatPage() {
     setMessages((m) => [...m, user]);
     setInput("");
     try {
-      if (useStream) {
+      if (clarification.length > 0) {
+        const r = await postClarify(convId || "", content);
+        setMessages((m) => [...m, toMsg(r)]);
+        setClarification(r.classification === "ambiguous" ? r.clarification_questions : []);
+        setLoading(false); setStage(null);
+      } else if (useStream) {
         streamChat(content, convId,
           (s) => setStage(s),
           (payload) => {
             if (payload.conversation_id) { setConvId(payload.conversation_id); localStorage.setItem(CONVERSATION_STORAGE_KEY, payload.conversation_id); }
             setMessages((m) => [...m, toMsg(payload)]);
+            setClarification(payload.classification === "ambiguous" ? payload.clarification_questions : []);
             setLoading(false); setStage(null);
           },
           (msg) => { setError(msg); setLoading(false); setStage(null); });
@@ -90,6 +100,7 @@ export default function ChatPage() {
         const r = await postChat(content, convId);
         setConvId(r.conversation_id); localStorage.setItem(CONVERSATION_STORAGE_KEY, r.conversation_id);
         setMessages((m) => [...m, toMsg(r)]);
+        setClarification(r.classification === "ambiguous" ? r.clarification_questions : []);
         setLoading(false); setStage(null);
       }
     } catch (e: unknown) {
@@ -99,12 +110,12 @@ export default function ChatPage() {
   }
 
   return (
-    <main className="mx-auto flex h-screen max-w-4xl flex-col p-4">
-      <header className="mb-3 flex items-center gap-3">
+    <main className="mx-auto flex h-screen max-w-3xl flex-col px-4">
+      <header className="flex items-center gap-3 border-b border-slate-800 py-4">
         <div className="flex h-9 w-9 items-center justify-center rounded-xl bg-sky-500 font-bold text-slate-950">DG</div>
         <div className="flex-1">
           <h1 className="text-lg font-bold leading-tight">Data Genie — Text-to-SQL</h1>
-          <p className="text-xs text-slate-400">Ask about orders, customers, products, payments & reviews</p>
+          <p className="text-xs text-slate-400">Your data assistant</p>
         </div>
         <label className="flex items-center gap-1 text-xs text-slate-400">
           <input type="checkbox" checked={useStream} onChange={(e) => setUseStream(e.target.checked)} /> stream
@@ -115,8 +126,9 @@ export default function ChatPage() {
       </header>
 
       {messages.length === 0 && (
-        <div className="mb-3 rounded-2xl border border-slate-800 bg-slate-900/60 p-4">
-          <p className="text-sm text-slate-300">Try one of these — I clarify when something is ambiguous and never guess:</p>
+        <div className="my-auto pb-16">
+          <h2 className="text-center text-2xl font-semibold">What would you like to know?</h2>
+          <p className="mt-2 text-center text-sm text-slate-400">Ask a question about your connected business data.</p>
           <div className="mt-2 flex flex-wrap gap-2">
             {SUGGESTIONS.map((s) => (
               <button key={s} onClick={() => send(s)} className="rounded-full border border-sky-500/40 px-3 py-1 text-xs text-sky-200 hover:bg-sky-500/20">{s}</button>
@@ -125,7 +137,7 @@ export default function ChatPage() {
         </div>
       )}
 
-      <div className="flex-1 space-y-3 overflow-y-auto rounded-2xl border border-slate-800 bg-slate-900/30 p-3">
+      <div className="flex-1 space-y-5 overflow-y-auto py-6">
         {messages.map((m) => (
           <ChatMessageView key={m.id} msg={m} conversationId={convId || ""}
             onResolved={(nm) => setMessages((prev) => [...prev, nm])}
@@ -141,17 +153,23 @@ export default function ChatPage() {
         <div ref={bottom} />
       </div>
 
-      <div className="mt-3 flex gap-2">
+      {clarification.length > 0 && (
+        <div className="mb-2 rounded-xl border border-amber-400/30 bg-amber-400/10 px-4 py-3 text-sm text-amber-100">
+          <p className="font-medium">I need a little more detail:</p>
+          <ul className="mt-1 list-disc pl-5">{clarification.map((q, i) => <li key={i}>{q}</li>)}</ul>
+        </div>
+      )}
+      <div className="mb-3 flex gap-2 rounded-2xl border border-slate-700 bg-slate-900 p-2 focus-within:border-sky-400">
         <input value={input} onChange={(e) => setInput(e.target.value)}
           onKeyDown={(e) => e.key === "Enter" && send()}
-          placeholder="Ask a data question, e.g. Total revenue by category in 2024"
-          className="flex-1 rounded-xl border border-slate-700 bg-slate-900 px-4 py-2.5 text-sm outline-none focus:border-sky-400" />
+          placeholder={clarification.length ? "Answer the clarification above…" : "Ask anything about your data…"}
+          className="flex-1 bg-transparent px-3 py-2 text-sm outline-none" />
         <button onClick={() => send()} disabled={loading || !input.trim()}
           className="rounded-xl bg-sky-500 px-5 py-2.5 text-sm font-semibold text-slate-950 disabled:opacity-50">
           {loading ? "…" : "Send"}
         </button>
       </div>
-      <p className="mt-1 text-center text-[11px] text-slate-500">Read-only SQL · validated with SQLGlot · grounded answers only</p>
+      <p className="mb-2 text-center text-[11px] text-slate-500">Answers are generated from your connected data.</p>
       {dashboardOpen && <DashboardPanel onClose={() => setDashboardOpen(false)} onOpenSession={loadConversation} />}
     </main>
   );

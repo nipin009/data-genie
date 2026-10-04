@@ -1,19 +1,26 @@
 """Environment-based configuration. No schema hardcoded; DB URL is configurable."""
 import os
+from pathlib import Path
 from functools import lru_cache
 
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
 class Settings(BaseSettings):
-    model_config = SettingsConfigDict(env_file=".env", env_file_encoding="utf-8", extra="ignore")
+    # Resolve against this source file so `uvicorn` may be started from either
+    # repository root or backend/ while consistently loading the root .env.
+    model_config = SettingsConfigDict(
+        env_file=Path(__file__).resolve().parents[2] / ".env",
+        env_file_encoding="utf-8",
+        extra="ignore",
+    )
 
     # Primary store: local Postgres database "local_db" (dg_-prefixed tables).
     # Host Postgres runs on the default socket; override via DATABASE_URL env.
     DATABASE_URL: str = "postgresql+psycopg2://nipinmishra@/local_db?host=/tmp"
     TABLE_PREFIX: str = "dg_"
     GOOGLE_API_KEY: str = ""
-    GEMINI_MODEL: str = "gemini-1.5-flash"
+    GEMINI_MODEL: str = "gemini-3.1-flash-lite"
     LLM_TIMEOUT_SECONDS: int = 30
 
     LANGSMITH_TRACING: bool = False
@@ -30,6 +37,13 @@ class Settings(BaseSettings):
     DB_MAX_OVERFLOW: int = 10
     LLM_SUMMARIZER: bool = False
     ALLOW_SQL_PREVIEW: bool = True
+    # Writes are deliberately off by default. Enabling requires both this flag
+    # and API-key authentication; mutations still require per-request approval.
+    ENABLE_MUTATIONS: bool = False
+    MUTATION_APPROVAL_TTL_SECONDS: int = 300
+    # Test/demo compatibility only. Production generic Text-to-SQL must use
+    # Gemini; this flag is false unless explicitly enabled.
+    ALLOW_DETERMINISTIC_FALLBACK: bool = False
 
     # Disabled for local development. In production set AUTH_ENABLED=true and
     # provide comma-separated `secret:role` pairs.

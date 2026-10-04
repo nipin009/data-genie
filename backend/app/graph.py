@@ -20,6 +20,7 @@ from .metrics import find_metrics, metrics_context
 from .query_spec import QuerySpec, build_query_spec
 from .schema_introspection import SchemaSnapshot, extract_schema
 from .schema_retrieval import render_schema_context, retrieve_relevant_schema
+from .example_bank import examples_context
 from .semantic_validation import validate_semantics
 from .sql_validation import validate_sql
 from .visualization import choose_chart
@@ -76,7 +77,7 @@ def reset_schema_cache() -> None:
 # ---- nodes ----
 def node_classify(state: AgentState) -> AgentState:
     snap = get_schema_snapshot()
-    c = classify(state["question"], snap.table_names())
+    c = classify(state["question"], snap.table_names(), state.get("history"))
     log.info("classify '%s' -> %s (%s)", state["question"][:80], c.label, c.reason)
     return {"classification": c.label, "class_reason": c.reason, "missing": c.missing,
             "clarification_questions": c.questions}
@@ -87,36 +88,65 @@ def node_retrieve(state: AgentState) -> AgentState:
     metrics = find_metrics(state["question"])
     retrieved = retrieve_relevant_schema(state["question"], snap)
     spec = build_query_spec(state["question"])
-    ctx = render_schema_context(retrieved, metrics_context(metrics)) + "\n" + spec.render()
+    ctx = (render_schema_context(retrieved, metrics_context(metrics)) + "\n" +
+           examples_context(state["question"]) + "\n" + spec.render())
     return {"schema_context": ctx, "selected_tables": retrieved["selected"], "query_spec": spec.as_dict()}
 
 
 def node_schema_answer(state: AgentState) -> AgentState:
-    """Serve schema metadata without generating or executing SQL."""
+    """Serve relevant live schema metadata without generating or executing SQL."""
     snap = get_schema_snapshot()
+    retrieved = retrieve_relevant_schema(state["question"], snap, top_k=6)
     q = state["question"].lower()
     names = sorted(snap.table_names())
     prefix = get_settings().TABLE_PREFIX or ""
 
-    if "how many table" in q:
+    # Follow the requested information depth.  Schema enumeration is common
+    # in chat, and returning every column for "names only" overwhelms the
+    # answer and makes the follow-up appear ignored.
+    wants_names_only = "only" in q and ("table" in q or "names" in q)
+    wants_count = "how many table" in q or "number of table" in q
+    wants_relationships = any(word in q for word in ("relationship", "foreign key", "join graph", "connect"))
+    wants_columns = "column" in q or "field" in q
+    wants_full_schema = "schema" in q and any(word in q for word in ("each", "every", "all", "full"))
+
+    if wants_names_only:
+        answer = "\n".join(names)
+        selected = names
+    elif wants_count:
         answer = f"There are {len(names)} tables in the connected database."
-    elif ("schema" in q and any(word in q for word in ("each table", "every table", "all table", "full schema"))):
-        sections = [f"{name}: " + ", ".join(c.name for c in snap.tables[name].columns) for name in names]
-        answer = "Schema for each available table:\n" + "\n".join(sections)
-    elif any(word in q for word in ("relationship", "foreign key", "join graph")):
-        edges = "\n".join(f"- {a}.{b} → {c}.{d}" for a, b, c, d in snap.join_edges)
-        answer = f"The database has these table relationships:\n{edges}" if edges else "I found no foreign-key relationships."
-    elif any(word in q for word in ("column", "field")):
+        selected = names
+    elif wants_relationships:
+        relevant = [edge for edge in snap.join_edges
+                    if any(token in q for token in (edge[0].lower(), edge[2].lower(),
+                                                      edge[0].removeprefix(prefix).lower(), edge[2].removeprefix(prefix).lower()))]
+        edges = relevant or snap.join_edges
+        answer = ("TABLE RELATIONSHIPS:\n" + "\n".join(f"- {a}.{b} → {c}.{d}" for a, b, c, d in edges)
+                  if edges else "I found no foreign-key relationships.")
+        selected = sorted({table for edge in edges for table in (edge[0], edge[2])})
+    elif wants_columns:
         target = next((name for name in names if name.lower() in q), None)
         if not target:
             target = next((name for name in names if name.removeprefix(prefix).lower() in q), None)
-        answer = (f"Columns in {target}: " + ", ".join(c.name for c in snap.tables[target].columns)
-                  if target else "Which table would you like columns for? Available tables: " + ", ".join(names))
+        if target:
+            answer = f"Columns in {target}: " + ", ".join(c.name for c in snap.tables[target].columns)
+            selected = [target]
+        else:
+            answer = "Which table would you like columns for? Available tables: " + ", ".join(names)
+            selected = names
+    elif wants_full_schema:
+        sections = [f"{name}: " + ", ".join(c.name for c in snap.tables[name].columns) for name in names]
+        answer = "Schema for each available table:\n" + "\n".join(sections)
+        selected = names
+    elif "which table" in q or "which tables" in q:
+        answer = ("Relevant tables: " + ", ".join(retrieved["selected"]) + "\n\n" +
+                  render_schema_context(retrieved))
+        selected = retrieved["selected"]
     else:
-        # Includes typo-tolerant requests such as "give table anmes only".
-        answer = "\n".join(names) if "only" in q else "Available tables: " + ", ".join(names)
+        answer = "Available tables: " + ", ".join(names)
+        selected = names
     return {"answer": answer, "done": True, "columns": [], "rows": [], "row_count": 0,
-            "selected_tables": names, "chart": {"type": "none", "reason": "schema metadata request"}}
+            "selected_tables": selected, "chart": {"type": "none", "reason": "schema metadata request"}}
 
 
 def node_assistant_info(state: AgentState) -> AgentState:
@@ -168,7 +198,7 @@ def node_validate(state: AgentState) -> AgentState:
     settings = get_settings()
     snap = get_schema_snapshot()
     known = {t: set(info.column_names) for t, info in snap.tables.items()}
-    res = validate_sql(state.get("sql", ""), known, settings.MAX_ROWS)
+    res = validate_sql(state.get("sql", ""), known, settings.MAX_ROWS, join_edges=snap.join_edges)
     if res.ok:
         sql = res.fixed_sql or state["sql"]
         raw_spec = state.get("query_spec")

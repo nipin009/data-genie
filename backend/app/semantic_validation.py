@@ -17,6 +17,7 @@ def validate_semantics(sql: str, spec: Optional[QuerySpec]) -> Optional[str]:
     table_for_output = {
         "customer_name": "dg_customers", "product_name": "dg_products",
         "payment_status": "dg_payments", "country": "dg_customers",
+        "product_review_status": "dg_product_reviews",
     }
     for output in spec.required_outputs:
         table = table_for_output.get(output)
@@ -26,14 +27,21 @@ def validate_semantics(sql: str, spec: Optional[QuerySpec]) -> Optional[str]:
     for metric in spec.metrics:
         if metric in ("total_revenue", "lifetime_spend") and not ("sum(" in low and ("line_total" in low or "unit_price" in low or "total_amount" in low)):
             errors.append("requested revenue/spend metric is not calculated")
+        elif metric == "net_revenue_after_returns" and not ("sum(" in low and "returned_quantity" in low and ("unit_price" in low or "line_total" in low)):
+            errors.append("requested net revenue after returns is not calculated")
         elif metric == "avg_rating" and not ("avg(" in low and "rating" in low and "dg_product_reviews" in low):
             errors.append("requested average rating metric is not calculated from reviews")
+        elif metric == "products_without_reviews" and not ("dg_product_reviews" in low and ("left join" in low or "not exists" in low)):
+            errors.append("requested products-without-reviews logic is missing")
         elif metric == "return_rate" and not ("returned_quantity" in low and "nullif" in low):
             errors.append("requested return rate metric is not calculated")
         elif metric == "avg_order_value" and not ("avg(" in low and "total_amount" in low):
             errors.append("requested average order value metric is not calculated")
+        elif metric == "customer_signup_count" and not ("count(" in low and "signup_date" in low):
+            errors.append("requested customer signup count is not calculated from signup dates")
 
-    if "category" in spec.dimensions and not ("dg_categories" in low and "group by" in low):
+    aggregate_requested = bool(spec.metrics)
+    if "category" in spec.dimensions and not ("dg_categories" in low and "category_name" in low and (not aggregate_requested or "group by" in low)):
         errors.append("requested category grouping is missing")
     if "month" in spec.dimensions and not ("group by" in low and any(x in low for x in ("date_trunc", "to_char", "strftime"))):
         errors.append("requested monthly grouping is missing")
@@ -49,6 +57,10 @@ def validate_semantics(sql: str, spec: Optional[QuerySpec]) -> Optional[str]:
             errors.append(f"requested {f.field}={f.value} filter is missing")
         elif f.operator == "contains" and str(f.value).lower() not in low:
             errors.append(f"requested product filter '{f.value}' is missing")
+        elif f.operator == "current_month" and not ("start of month" in low or "date_trunc('month'" in low):
+            errors.append("requested current-month filter is missing")
+        elif f.operator == "last_year" and not ("current_date" in low or "date('now'" in low):
+            errors.append("requested last-year filter must be relative to the current date")
 
     if spec.top_n and not re.search(rf"\blimit\s+{spec.top_n}\b", low):
         errors.append(f"requested Top {spec.top_n} limit is missing")

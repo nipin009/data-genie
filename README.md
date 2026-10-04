@@ -1,6 +1,6 @@
 # Data Genie — Production Text-to-SQL
 
-Chat-based Text-to-SQL over the local Postgres database **`local_db`**: 7 retail tables with `dg_` prefix — `dg_categories`, `dg_customers`, `dg_products`, `dg_orders`, `dg_order_items`, `dg_payments`, `dg_product_reviews` (15–20 columns each). FastAPI + LangGraph + Gemini + SQLAlchemy + SQLGlot backend; Next.js + TypeScript + Tailwind + Recharts frontend. The app scopes itself to `dg_*` tables; other tables in `local_db` (e.g. `daily_hustle_*`) are never queried.
+Chat-based Text-to-SQL over the local Postgres database **`local_db`**: 23 commerce and operations tables with the `dg_` prefix, including orders, customers, products, payments, inventory, suppliers, campaigns, support tickets, and subscriptions. FastAPI + LangGraph + Gemini + SQLAlchemy + SQLGlot backend; Next.js + TypeScript + Tailwind + Recharts frontend. The app scopes itself to `dg_*` tables; other tables in `local_db` (e.g. `daily_hustle_*`) are never queried.
 
 ## Architecture
 
@@ -43,7 +43,7 @@ echo "NEXT_PUBLIC_API_BASE=http://localhost:8001" > .env.local
 npm run dev   # http://localhost:3000
 ```
 
-Without `GOOGLE_API_KEY` the backend uses a deterministic fallback SQL builder so the demo works offline; set the key to enable Gemini (`GEMINI_MODEL=gemini-1.5-flash`).
+Without `GOOGLE_API_KEY`, the copied development `.env` enables a limited deterministic fallback for the supported demo templates. It declines unsupported requests rather than substituting a plausible query. Configure Gemini for general Text-to-SQL, and keep the fallback disabled in production if generic LLM-backed querying is required.
 
 ## Docker
 
@@ -71,6 +71,8 @@ docker compose exec -T db psql -U datagenie -d datagenie -f /docker-entrypoint-i
 - `POST /api/clarify` `{conversation_id, answers}` → re-runs workflow with merged context
 - `GET /api/history/{id}`, `GET /api/schema`, `GET /healthz`
 - `GET /api/dashboard/sessions`, `GET /api/dashboard/logs` → persistent memory and request-audit data shown in the UI dashboard
+- `POST /api/admin/mutations/preview` → admin-only proposal for one `INSERT`, `UPDATE`, `DELETE`, `CREATE TABLE`, `ALTER TABLE`, or `DROP TABLE`; does not execute SQL
+- `POST /api/admin/mutations/confirm` → applies that exact short-lived proposal only after `confirmation: "APPLY"`
 
 ## Tests & benchmark (local_db)
 
@@ -102,6 +104,11 @@ For production, set `AUTH_ENABLED=true` and issue separate long random keys for
 the `analyst` (chat) and `admin` (dashboard) roles. Send each key in
 `X-API-Key`. The browser key setting is only suitable for an internal demo;
 put public-facing authentication at a server-side gateway or SSO proxy.
+
+Mutations are disabled by default. To use the human-reviewed admin mutation
+workflow, set both `AUTH_ENABLED=true` and `ENABLE_MUTATIONS=true`, configure
+an `admin` API key, inspect the preview response, then send its `proposal_id`
+to the confirm endpoint with `confirmation` exactly equal to `APPLY`.
 | `FRONTEND_ORIGIN` | http://localhost:3000 | CORS |
 
 ## Layout

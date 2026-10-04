@@ -10,7 +10,9 @@ import re
 from typing import Dict, List, Set, Tuple
 
 from .metrics import find_metrics
-from .schema_introspection import SchemaSnapshot, TableInfo
+from .schema_introspection import SchemaSnapshot, TableInfo, find_join_path
+from .schema_catalog import metadata_for
+from .example_bank import examples_context
 
 _TOKEN = re.compile(r"[a-z0-9]+")
 
@@ -95,6 +97,17 @@ def retrieve_relevant_schema(
         pruned[tname] = TableInfo(name=t.name, columns=keep[:max_cols_per_table],
                                   primary_keys=t.primary_keys, foreign_keys=t.foreign_keys,
                                   row_count=t.row_count)
+    # Add explicit BFS paths between the strongest concepts. This makes a
+    # 2–5 table bridge available even when an intermediate table had no direct
+    # lexical match (e.g. region -> warehouse -> inventory -> product).
+    if selected:
+        anchor = selected[0]
+        for target in list(selected[1:]):
+            for edge in find_join_path(snapshot, anchor, target, max_depth=5):
+                for table in (edge[0], edge[2]):
+                    if table in snapshot.tables and table not in selected and len(selected) < top_k + 4:
+                        selected.append(table)
+                        pruned[table] = snapshot.tables[table]
     # Relevant join edges among selected
     edges = [(a, b, c, d) for (a, b, c, d) in snapshot.join_edges if a in selected and c in selected]
     return {"tables": pruned, "edges": edges, "scores": scored, "selected": selected}
@@ -104,11 +117,22 @@ def render_schema_context(retrieved: Dict, metrics_text: str = "") -> str:
     lines: List[str] = []
     for tname in retrieved["selected"]:
         t = retrieved["tables"][tname]
-        lines.append(t.describe())
+        meta = metadata_for(tname)
+        heading = f"BUSINESS MEANING: {meta.description}\n" if meta else ""
+        lines.append(heading + t.describe())
+        if meta:
+            descriptions = [f"{name}={desc}" for name, desc in meta.columns.items() if name in t.column_names]
+            if descriptions:
+                lines.append("  meanings: " + "; ".join(descriptions))
+            for column, values in meta.enums.items():
+                if column in t.column_names:
+                    lines.append(f"  enum {column}: {', '.join(values)}")
     if retrieved["edges"]:
         lines.append("JOINS AVAILABLE:")
         for a, b, c, d in retrieved["edges"]:
             lines.append(f"  {a}.{b} = {c}.{d}")
     if metrics_text:
         lines.append(metrics_text)
+    # The question is injected by the caller below only through selected
+    # examples; this avoids carrying the entire example bank in every prompt.
     return "\n".join(lines)
