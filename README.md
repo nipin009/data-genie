@@ -17,19 +17,19 @@ User → Next.js chat UI → POST /api/chat ─┐
 - **Before SQL**: every request classified as `in_scope | ambiguous | unsupported | unrelated`. Ambiguous → targeted follow-up questions via clarification cards; conversation state preserved; no guessing, no execution until resolved. Unrelated → polite redirect, no DB hit. Unsupported (writes/DDL, forecasting) → clear explanation.
 - **Schema-aware**: live SQLAlchemy reflection (`schema_introspection.py`), FK join graph + BFS path, business metrics layer (`metrics.py`), keyword+metric retrieval with 1-hop FK expansion (`schema_retrieval.py`).
 - **Secure execution**: SQLGlot single-SELECT enforcement, strict SQL-function allowlist, known-table/column check, semantic requirement checks, LIMIT clamp (≤500), Postgres `statement_timeout` + read-only transaction, row cap + truncation flag.
-- **Semantic planning**: every in-scope request is converted to a QuerySpec (metrics, dimensions, filters, required outputs and ranking). SQL which omits an explicit requirement is repaired or declined.
+- **Semantic planning**: every in-scope request is converted to a typed QuerySpec (metrics, dimensions, filters, required outputs and ranking). With Gemini configured, structured planning broadens coverage beyond templates; safe live-value linking binds phrases such as category, product, country, or status values to inspected columns. Relative dates such as "last month" are resolved deterministically. SQL which omits a bound requirement is repaired or declined.
 - **Grounded answers**: `answer.py` / Gemini summarizer only uses returned rows; empty results get an honest "no matching data" message.
 - **Auto charts**: deterministic `visualization.py` (line for time series, bar for categories, pie for small shares, table otherwise) with reason string; UI offers chart/table switch, CSV export, filter/sort/pagination.
-- **Observability**: structured logging + optional LangSmith tracing (`LANGSMITH_TRACING=true`).
+- **Observability**: structured logging, persistent request audit records, and an admin metrics summary (request count, failure rate, average/p95 latency, and workflow classifications).
 
 ## Quickstart (Postgres local_db, no Docker)
 
-Prereqs: Python 3.9+, Node 18+, local Postgres running with a `local_db` database (this machine: Homebrew Postgres, socket auth as `nipinmishra`).
+Prereqs: Python 3.11+, Node 18+, local Postgres running with a `local_db` database (this machine: Homebrew Postgres, socket auth as `nipinmishra`).
 
 ```bash
 # 1. Backend
 cd backend
-python3 -m venv .venv && source .venv/bin/activate
+python3.11 -m venv .venv && source .venv/bin/activate
 pip install -r requirements.txt
 cp ../.env.example ../.env   # defaults already point at Postgres local_db; just add GOOGLE_API_KEY optionally
 export DATABASE_URL="postgresql+psycopg2://nipinmishra@/local_db?host=/tmp" TABLE_PREFIX="dg_"
@@ -70,7 +70,7 @@ docker compose exec -T db psql -U datagenie -d datagenie -f /docker-entrypoint-i
 - `POST /api/chat/stream` SSE events `status` → `final` (same payload)
 - `POST /api/clarify` `{conversation_id, answers}` → re-runs workflow with merged context
 - `GET /api/history/{id}`, `GET /api/schema`, `GET /healthz`
-- `GET /api/dashboard/sessions`, `GET /api/dashboard/logs` → persistent memory and request-audit data shown in the UI dashboard
+- `GET /api/dashboard/sessions`, `GET /api/dashboard/logs`, `GET /api/dashboard/metrics` → persistent memory, request audit data, and operational monitoring shown in the admin dashboard
 - `POST /api/admin/mutations/preview` → admin-only proposal for one `INSERT`, `UPDATE`, `DELETE`, `CREATE TABLE`, `ALTER TABLE`, or `DROP TABLE`; does not execute SQL
 - `POST /api/admin/mutations/confirm` → applies that exact short-lived proposal only after `confirmation: "APPLY"`
 
@@ -97,7 +97,6 @@ Benchmark `benchmark/questions.yaml` (18 questions): joins, aggregations, edge c
 | `GEMINI_MODEL` | `gemini-1.5-flash` | Model name |
 | `QUERY_TIMEOUT_MS` / `MAX_ROWS` / `MAX_REPAIR_RETRIES` | 15000 / 500 / 2 | Guardrails |
 | `MAX_QUERY_COST` / `LLM_SUMMARIZER` | 0 / false | Optional Postgres planner-cost cap / optional second LLM prose call |
-| `LANGSMITH_TRACING` / `LANGSMITH_API_KEY` / `LANGSMITH_PROJECT` | false | Tracing |
 | `AUTH_ENABLED` / `API_KEYS` | false / — | Optional API-key RBAC; keys use `secret:analyst` or `secret:admin` |
 
 For production, set `AUTH_ENABLED=true` and issue separate long random keys for

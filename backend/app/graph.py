@@ -11,14 +11,16 @@ from typing import Any, Dict, List, Optional, TypedDict
 from langgraph.graph import END, StateGraph
 
 from .answer import grounded_answer
-from .classifier import classify
+from .classifier import classify, _is_explicit_metadata_request
 from .config import get_settings
 from .db import execute_readonly_sql, get_engine, query_cost
 from .llm import generate_sql_with_llm, repair_sql_with_llm, summarize_with_llm
 from .logging_config import log
 from .metrics import find_metrics, metrics_context
-from .query_spec import QuerySpec, build_query_spec
-from .schema_introspection import SchemaSnapshot, extract_schema
+from .query_spec import QuerySpec
+from .query_planning import build_planned_query_spec, plan_question
+from .entity_resolution import bind_planned_filters, resolve_entities
+from .schema_introspection import SchemaSnapshot, extract_schema, find_join_path
 from .schema_retrieval import render_schema_context, retrieve_relevant_schema
 from .example_bank import examples_context
 from .semantic_validation import validate_semantics
@@ -72,6 +74,8 @@ def get_schema_snapshot(engine=None) -> SchemaSnapshot:
 def reset_schema_cache() -> None:
     global _schema_cache
     _schema_cache = None
+    from .entity_resolution import clear_entity_cache
+    clear_entity_cache()
 
 
 # ---- nodes ----
@@ -87,8 +91,36 @@ def node_retrieve(state: AgentState) -> AgentState:
     snap = get_schema_snapshot()
     metrics = find_metrics(state["question"])
     retrieved = retrieve_relevant_schema(state["question"], snap)
-    spec = build_query_spec(state["question"])
-    ctx = (render_schema_context(retrieved, metrics_context(metrics)) + "\n" +
+    schema_context = render_schema_context(retrieved, metrics_context(metrics))
+    # First plan in structured form, then bind any explicit business values to
+    # inspected columns.  Both steps degrade safely to deterministic behaviour
+    # when no LLM is configured.
+    plan = plan_question(state["question"], schema_context)
+    spec = build_planned_query_spec(state["question"], plan)
+    bind_planned_filters(spec.filters, snap, retrieved["selected"])
+    resolution = resolve_entities(state["question"], snap, retrieved["selected"])
+    # Value linking can discover a table that keyword retrieval missed (for
+    # example a category value such as Books). Include that table and a bounded
+    # FK path so the SQL generator has every required join available.
+    for item in resolution.filters:
+        if item.table not in retrieved["selected"] and item.table in snap.tables:
+            anchor = retrieved["selected"][0] if retrieved["selected"] else item.table
+            for edge in find_join_path(snap, anchor, item.table, max_depth=5):
+                for table_name in (edge[0], edge[2]):
+                    if table_name not in retrieved["selected"]:
+                        retrieved["selected"].append(table_name)
+                        retrieved["tables"][table_name] = snap.tables[table_name]
+            if item.table not in retrieved["selected"]:
+                retrieved["selected"].append(item.table)
+                retrieved["tables"][item.table] = snap.tables[item.table]
+    # Re-render after table expansion; the planner receives the initial compact
+    # context, while SQL generation receives the complete resolved context.
+    schema_context = render_schema_context(retrieved, metrics_context(metrics))
+    existing = {(item.table, item.column, str(item.value)) for item in spec.filters}
+    for item in resolution.filters:
+        if (item.table, item.column, str(item.value)) not in existing:
+            spec.filters.append(item)
+    ctx = (schema_context + "\n" + resolution.render() + "\n" +
            examples_context(state["question"]) + "\n" + spec.render())
     return {"schema_context": ctx, "selected_tables": retrieved["selected"], "query_spec": spec.as_dict()}
 
@@ -138,7 +170,7 @@ def node_schema_answer(state: AgentState) -> AgentState:
         sections = [f"{name}: " + ", ".join(c.name for c in snap.tables[name].columns) for name in names]
         answer = "Schema for each available table:\n" + "\n".join(sections)
         selected = names
-    elif "which table" in q or "which tables" in q:
+    elif _is_explicit_metadata_request(q) and ("table" in q or "tables" in q):
         answer = ("Relevant tables: " + ", ".join(retrieved["selected"]) + "\n\n" +
                   render_schema_context(retrieved))
         selected = retrieved["selected"]

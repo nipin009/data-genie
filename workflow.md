@@ -9,7 +9,7 @@ flowchart LR
     CLIENT[Client / Frontend] --> API[FastAPI API<br/>main.py]
     API --> SESSION[(Session & audit tables<br/>datagenie_*)]
     API --> GRAPH[LangGraph workflow<br/>graph.py]
-    GRAPH --> GEMINI[Gemini 3.1 Flash Lite]
+    GRAPH --> GEMINI[Google GenAI SDK / Gemini]
     GRAPH --> PG[(PostgreSQL<br/>dg_* business tables)]
     GRAPH --> API
 ```
@@ -31,9 +31,10 @@ flowchart TD
     E -->|not_in_schema| I[Explain missing business concept]
     E -->|ambiguous| J[Return focused clarification questions]
     E -->|schema_request| K[Retrieve and return live metadata]
-    E -->|in_scope| L[Build query plan and retrieve context]
+    E -->|in_scope| L[Build structured query plan and retrieve context]
 
-    L --> M[Gemini generates one PostgreSQL SELECT]
+    L --> LINK[Resolve safe live business values and relative dates]
+    LINK --> M[Gemini generates one PostgreSQL SELECT]
     M --> N[SQLGlot syntax and safety validation]
     N --> O{Valid SQL?}
     O -->|No, retry available| P[Gemini repair with exact error]
@@ -151,7 +152,9 @@ Files: `query_spec.py`, `llm.py`
 - filters: dates, status, country, product;
 - output: ranking, Top-N, comparison, trend, detailed rows.
 
-Gemini receives the compact retrieved context, permitted joins, business definitions, examples, recent conversation, and the question. It must return exactly one PostgreSQL `SELECT` statement with no explanation.
+When Gemini is configured, the service first requests a typed structured plan (metrics, dimensions, literal filters, outputs, and ranking) and merges it with deterministic requirements. A safe live-value linker searches only reflected, non-sensitive text/enumeration columns for unambiguous matches, such as `Books` → `dg_categories.category_name`. Relative dates such as "last month" become a concrete server-side date range.
+
+Gemini receives the compact retrieved context, resolved filters, permitted joins, business definitions, examples, recent conversation, and the question. It must return exactly one PostgreSQL `SELECT` statement with no explanation.
 
 Generic SQL generation requires configuration in the root `.env`:
 
@@ -187,7 +190,7 @@ flowchart TD
 
 The validator rejects `INSERT`, `UPDATE`, `DELETE`, `DROP`, `ALTER`, `TRUNCATE`, `CREATE`, grants, revokes, multiple statements, unknown objects, unsafe functions, and direct restricted personal/payment fields. It also enforces a maximum row limit.
 
-`semantic_validation.py` then checks that generated SQL fulfills required metrics, filters, grouping, ranking, and output details from `QuerySpec`.
+`semantic_validation.py` then parses the SQL and checks that generated SQL fulfills required metrics, filters, grouping, ranking, and output details from `QuerySpec`. Resolved filters must retain their table, column, and literal values, so a query cannot silently omit a requested category or date range.
 
 ## 6. Repair loop
 

@@ -5,7 +5,7 @@ psycopg2-binary==2.9.10
 sqlglot==25.6.0
 langgraph==0.2.60
 langchain-core==0.3.28
-langchain-google-genai==2.0.6
+google-genai==2.23.0
 pydantic==2.10.4
 pydantic-settings==2.7.0
 python-dotenv==1.0.1

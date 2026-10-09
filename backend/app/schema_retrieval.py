@@ -49,7 +49,7 @@ def score_tables(question: str, snapshot: SchemaSnapshot) -> List[Tuple[str, flo
                 col_overlap += 1.0
         bonus = 2.0 if tname in metric_tables else 0.0
         # generic domain boosts (physical dg_ names)
-        generic = {"order": [_ord, _items], "revenue": [_ord, _items],
+        generic = {"order": [_ord, _items], "revenue": [_ord, _items], "sales": [_ord, _items, _prod, _cats],
                    "customer": [_cust, _ord], "product": [_prod, _items],
                    "review": [_rev], "payment": [_pay], "categor": [_cats, _prod]}
         for key, tbls in generic.items():

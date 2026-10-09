@@ -52,6 +52,7 @@ def test_health_reports_runtime_query_capability(client):
     health = client.get("/healthz")
     assert health.status_code == 200
     assert "llm_configured" in health.json()
+    assert "llm_runtime_available" in health.json()
     assert "offline_fallback_enabled" in health.json()
     assert client.get("/readyz").status_code == 200
 
@@ -95,6 +96,13 @@ def test_schema_requests_bypass_sql(client):
     assert full_schema["sql"] is None
     assert "dg_orders:" in full_schema["answer"] and "order_date" in full_schema["answer"]
 
+    noncanonical = client.post(
+        "/api/chat", json={"message": "which have moeny stats which table"}
+    ).json()
+    assert noncanonical["classification"] == "schema_request"
+    assert noncanonical["sql"] is None
+    assert "offline query templates" not in noncanonical["answer"].lower()
+
 
 def test_history_and_dashboard_are_persisted(client):
     chat = client.post("/api/chat", json={"message": "Give table names only"}).json()
@@ -107,6 +115,16 @@ def test_history_and_dashboard_are_persisted(client):
     assert any(s["conversation_id"] == cid for s in sessions)
     logs = client.get("/api/dashboard/logs").json()["logs"]
     assert any(l["conversation_id"] == cid and l["status"] == "ok" for l in logs)
+
+
+def test_dashboard_metrics_summarize_audited_requests(client):
+    before = client.get("/api/dashboard/metrics").json()["window_requests"]
+    response = client.post("/api/chat", json={"message": "Give table names only"})
+    assert response.status_code == 200
+    metrics = client.get("/api/dashboard/metrics").json()
+    assert metrics["window_requests"] == before + 1
+    assert metrics["successful_requests"] >= 1
+    assert metrics["classification_counts"]["schema_request"] >= 1
 
 
 def test_in_scope_executes_grounded(client):

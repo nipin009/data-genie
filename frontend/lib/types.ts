@@ -75,3 +75,14 @@ export interface DashboardLog {
   error_text?: string | null;
   created_at: string;
 }
+
+export interface DashboardMetrics {
+  window_requests: number;
+  window_size: number;
+  successful_requests: number;
+  failed_requests: number;
+  failure_rate: number;
+  avg_latency_ms: number | null;
+  p95_latency_ms: number | null;
+  classification_counts: Record<string, number>;
+}

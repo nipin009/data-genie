@@ -6,6 +6,9 @@ rather than silently executing a plausible but wrong query.
 import re
 from typing import List, Optional
 
+import sqlglot
+import sqlglot.expressions as exp
+
 from .query_spec import QuerySpec
 
 
@@ -14,6 +17,20 @@ def validate_semantics(sql: str, spec: Optional[QuerySpec]) -> Optional[str]:
         return None
     low = (sql or "").lower()
     errors: List[str] = []
+    try:
+        parsed = sqlglot.parse_one(sql, read="postgres")
+        sql_tables = {table.name.lower() for table in parsed.find_all(exp.Table)}
+        sql_columns = {column.name.lower() for column in parsed.find_all(exp.Column)}
+        sql_literals = {
+            str(literal.this).lower()
+            for literal in parsed.find_all(exp.Literal)
+            if literal.this is not None
+        }
+    except Exception:
+        # Syntax validation will return the authoritative parse error.  Keep
+        # this layer focused on requirements rather than masking it.
+        parsed = None
+        sql_tables, sql_columns, sql_literals = set(), set(), set()
     table_for_output = {
         "customer_name": "dg_customers", "product_name": "dg_products",
         "payment_status": "dg_payments", "country": "dg_customers",
@@ -47,6 +64,22 @@ def validate_semantics(sql: str, spec: Optional[QuerySpec]) -> Optional[str]:
         errors.append("requested monthly grouping is missing")
 
     for f in spec.filters:
+        # Resolved filters must map to a real table/column and retain every
+        # literal value in generated SQL.  This closes the common failure mode
+        # where a model returns plausible total revenue while silently dropping
+        # a value such as "Books" or a date range.
+        if f.table and f.column:
+            if f.table.lower() not in sql_tables:
+                errors.append(f"resolved filter table '{f.table}' is missing")
+            if f.column.lower() not in sql_columns:
+                errors.append(f"resolved filter column '{f.column}' is missing")
+            expected = [f.value] + ([f.end_value] if f.end_value is not None else [])
+            for value in expected:
+                if str(value).lower() not in sql_literals:
+                    errors.append(f"resolved filter value '{value}' is missing")
+            # The exact resolved requirement has already been checked; avoid
+            # applying a broad legacy text check below.
+            continue
         if f.operator == "year" and str(f.value) not in low:
             errors.append(f"requested year {f.value} filter is missing")
         elif f.operator == "last_days" and not ("interval" in low or "date('now'" in low):

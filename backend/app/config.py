@@ -20,12 +20,8 @@ class Settings(BaseSettings):
     DATABASE_URL: str = "postgresql+psycopg2://nipinmishra@/local_db?host=/tmp"
     TABLE_PREFIX: str = "dg_"
     GOOGLE_API_KEY: str = ""
-    GEMINI_MODEL: str = "gemini-3.1-flash-lite"
+    GEMINI_MODEL: str = "gemini-3.5-flash-lite"
     LLM_TIMEOUT_SECONDS: int = 30
-
-    LANGSMITH_TRACING: bool = False
-    LANGSMITH_API_KEY: str = ""
-    LANGSMITH_PROJECT: str = "data-genie-text2sql"
 
     QUERY_TIMEOUT_MS: int = 15000
     LOCK_TIMEOUT_MS: int = 3000

@@ -5,6 +5,7 @@ heuristic parser covers the common retail analytics vocabulary offline; an LLM
 may still use this object as a constrained planning contract for novel cases.
 """
 from dataclasses import asdict, dataclass, field
+from datetime import date, timedelta
 import re
 from typing import Any, Dict, List, Optional
 
@@ -14,6 +15,13 @@ class FilterSpec:
     field: str
     operator: str
     value: Any
+    # A resolved filter is bound to an inspected, allowed database column.  It
+    # gives semantic validation something concrete to prove in the generated
+    # SQL, rather than relying on the model to remember a phrase from the user.
+    table: str = ""
+    column: str = ""
+    end_value: Any = None
+    source: str = "heuristic"
 
 
 @dataclass
@@ -30,11 +38,15 @@ class QuerySpec:
         return asdict(self)
 
     def render(self) -> str:
+        def show_filter(item: FilterSpec) -> str:
+            target = f"{item.table}.{item.column}" if item.table and item.column else item.field
+            value = f"{item.value}..{item.end_value}" if item.end_value is not None else item.value
+            return f"{target} {item.operator} {value}"
         return (
             "QUERY REQUIREMENTS (do not omit any):\n"
             f"- metrics: {', '.join(self.metrics) or 'none explicitly named'}\n"
             f"- dimensions: {', '.join(self.dimensions) or 'none'}\n"
-            f"- filters: {', '.join(f'{x.field} {x.operator} {x.value}' for x in self.filters) or 'none'}\n"
+            f"- filters: {', '.join(show_filter(x) for x in self.filters) or 'none'}\n"
             f"- required outputs: {', '.join(self.required_outputs) or 'none'}\n"
             f"- top_n: {self.top_n or 'not requested'}; sort: {self.sort_direction or 'not specified'}"
         )
@@ -81,6 +93,18 @@ def build_query_spec(question: str) -> QuerySpec:
     months = re.search(r"last\s+(\d+)\s+months?", q)
     if months:
         spec.filters.append(FilterSpec("order_date", "last_months", int(months.group(1))))
+    # Resolve calendar language once, on the server, instead of allowing the
+    # model to interpret "last month" differently in every generated query.
+    if re.search(r"\blast\s+month\b", q) and not months:
+        today = date.today()
+        first_this_month = today.replace(day=1)
+        last_month_end = first_this_month - timedelta(days=1)
+        last_month_start = last_month_end.replace(day=1)
+        spec.filters.append(FilterSpec(
+            "order_date", "between", last_month_start.isoformat(),
+            table="dg_orders", column="order_date", end_value=first_this_month.isoformat(),
+            source="date_resolver",
+        ))
     if "last year" in q:
         spec.filters.append(FilterSpec("relative_date", "last_year", "current"))
     for status in ("pending", "processing", "shipped", "delivered", "cancelled", "returned"):

@@ -92,9 +92,11 @@ def _clarification_prompt(original_question: str, questions: list[str], prior_an
 @app.get("/healthz")
 def healthz():
     runtime = get_settings()
+    from .llm import has_llm_runtime
     return {
         "status": "ok",
         "llm_configured": bool(runtime.GOOGLE_API_KEY),
+        "llm_runtime_available": has_llm_runtime(),
         "offline_fallback_enabled": runtime.ALLOW_DETERMINISTIC_FALLBACK,
     }
 
@@ -103,12 +105,13 @@ def healthz():
 def readyz():
     """Expose the otherwise confusing no-LLM state before a user sends a query."""
     runtime = get_settings()
-    if not runtime.GOOGLE_API_KEY and not runtime.ALLOW_DETERMINISTIC_FALLBACK:
+    from .llm import has_llm_runtime
+    if not has_llm_runtime() and not runtime.ALLOW_DETERMINISTIC_FALLBACK:
         raise HTTPException(
             503,
-            "Text-to-SQL is not configured. Set GOOGLE_API_KEY, or enable the limited deterministic fallback for demo use.",
+            "Text-to-SQL is not configured. Set GOOGLE_API_KEY and install langchain-google-genai, or enable the limited deterministic fallback for demo use.",
         )
-    return {"status": "ready", "mode": "llm" if runtime.GOOGLE_API_KEY else "limited_offline"}
+    return {"status": "ready", "mode": "llm" if has_llm_runtime() else "limited_offline"}
 
 
 def _require_mutation_admin(request) -> None:
@@ -174,6 +177,12 @@ def dashboard_sessions(limit: int = Query(50, ge=1, le=200)):
 @app.get("/api/dashboard/logs")
 def dashboard_logs(limit: int = Query(100, ge=1, le=500)):
     return {"logs": store.dashboard_logs(limit)}
+
+
+@app.get("/api/dashboard/metrics")
+def dashboard_metrics(limit: int = Query(1000, ge=1, le=5000)):
+    """Aggregated request health for the admin operations dashboard."""
+    return store.dashboard_metrics(limit)
 
 
 @app.post("/api/chat", response_model=ChatResponse)

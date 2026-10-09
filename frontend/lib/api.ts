@@ -1,4 +1,4 @@
-import type { ChatResponsePayload, DashboardLog, DashboardSession, HistoryMessagePayload, SchemaPayload } from "./types";
+import type { ChatResponsePayload, DashboardLog, DashboardMetrics, DashboardSession, HistoryMessagePayload, SchemaPayload } from "./types";
 
 const API_BASE = process.env.NEXT_PUBLIC_API_BASE || "http://localhost:8001";
 const API_KEY = process.env.NEXT_PUBLIC_DATA_GENIE_API_KEY;
@@ -35,6 +35,12 @@ export async function getDashboardLogs(): Promise<DashboardLog[]> {
   const res = await fetch(`${API_BASE}/api/dashboard/logs`, { headers: authHeaders() });
   if (!res.ok) throw new Error(`Could not load logs: ${res.status}`);
   return (await res.json()).logs || [];
+}
+
+export async function getDashboardMetrics(): Promise<DashboardMetrics> {
+  const res = await fetch(`${API_BASE}/api/dashboard/metrics`, { headers: authHeaders() });
+  if (!res.ok) throw new Error(`Could not load monitoring metrics: ${res.status}`);
+  return res.json();
 }
 
 export async function getHistory(conversationId: string): Promise<HistoryMessagePayload[]> {

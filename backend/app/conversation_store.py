@@ -176,6 +176,47 @@ def dashboard_logs(limit: int = 100) -> List[Dict[str, Any]]:
     return [dict(r) for r in rows]
 
 
+def summarize_request_logs(logs: List[Dict[str, Any]]) -> Dict[str, Any]:
+    """Return portable, privacy-safe operational aggregates for the dashboard.
+
+    Aggregation deliberately happens in Python rather than using database-specific
+    percentile functions, so local SQLite and production Postgres report the same
+    values.  Only audit metadata is used; request text and generated SQL are not
+    exposed in this summary.
+    """
+    total = len(logs)
+    successful = sum(1 for item in logs if item.get("status") == "ok")
+    failed = total - successful
+    latency = sorted(int(item["latency_ms"]) for item in logs if item.get("latency_ms") is not None)
+    # Nearest-rank p95 keeps the metric intuitive for small windows as well.
+    p95 = latency[max(0, (95 * len(latency) + 99) // 100 - 1)] if latency else None
+    classifications: Dict[str, int] = {}
+    for item in logs:
+        label = item.get("classification") or "unknown"
+        classifications[label] = classifications.get(label, 0) + 1
+    return {
+        "window_requests": total,
+        "successful_requests": successful,
+        "failed_requests": failed,
+        "failure_rate": round(failed / total, 4) if total else 0.0,
+        "avg_latency_ms": round(sum(latency) / len(latency), 1) if latency else None,
+        "p95_latency_ms": p95,
+        "classification_counts": dict(sorted(classifications.items())),
+    }
+
+
+def dashboard_metrics(limit: int = 1000) -> Dict[str, Any]:
+    """Summarize the most recent audit records for operational monitoring."""
+    ensure_tables()
+    with get_engine().connect() as conn:
+        rows = conn.execute(text("""SELECT classification, latency_ms, status
+            FROM datagenie_request_logs ORDER BY created_at DESC LIMIT :limit"""),
+            {"limit": limit}).mappings().all()
+    metrics = summarize_request_logs([dict(row) for row in rows])
+    metrics["window_size"] = limit
+    return metrics
+
+
 def clear_all() -> None:
     ensure_tables()
     with get_engine().begin() as conn:

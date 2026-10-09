@@ -63,6 +63,10 @@ def test_schema_metadata_requests_are_not_data_queries():
     assert classify("Name al the tables in my db", TABLES).label == "schema_request"
     assert classify("Name the column names in dg_vendors", TABLES).label == "schema_request"
     assert classify("Which table has money related data", TABLES).label == "schema_request"
+    # Word order and an unrelated misspelling must not send a metadata lookup
+    # into the SQL-generation path.
+    assert classify("which have moeny stats which table", TABLES).label == "schema_request"
+    assert classify("where do I find the tables for financial values", TABLES).label == "schema_request"
 
 
 def test_user_is_customer_domain_term():
@@ -71,3 +75,22 @@ def test_user_is_customer_domain_term():
 
 def test_direct_customer_identifiers_are_restricted():
     assert classify("Export customer email addresses", TABLES).label == "unsupported"
+
+
+def test_variants_of_writes_and_contact_data_are_blocked():
+    assert classify("Change all cancelled orders to delivered", TABLES).label == "unsupported"
+    assert classify("Download every customer's email address and mobile number", TABLES).label == "unsupported"
+
+
+def test_vague_performer_request_requires_a_metric():
+    result = classify("Show me our strongest performers", TABLES)
+    assert result.label == "ambiguous"
+    assert "metric" in result.missing
+
+
+def test_structured_llm_metadata_route_is_not_vetoed_by_regex(monkeypatch):
+    from app.classifier import Classification
+    monkeypatch.setattr("app.classifier._classify_with_llm", lambda *_: Classification(
+        "schema_request", "model recognized a non-canonical schema question"
+    ))
+    assert classify("Where is revenue stored?", TABLES).label == "schema_request"

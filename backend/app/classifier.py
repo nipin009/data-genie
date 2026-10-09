@@ -16,6 +16,8 @@ import json
 from dataclasses import dataclass, field
 from typing import List, Optional
 
+from pydantic import BaseModel, Field
+
 VAGUE_PATTERNS = [
     r"\b(recent|recently|lately|top|best|popular|high|low)\b(?!\s*(10|5|3|\d+))",
     r"\b(my|our)\b",
@@ -26,6 +28,7 @@ VAGUE_PATTERNS = [
 WRITE_PATTERNS = [
     r"\b(insert|update|delete|drop|alter|create|truncate|grant|revoke)\b",
     r"\bchange\s+the\s+(price|data|record)",
+    r"\b(?:change|set|mark)\b.*\b(?:order|orders|customer|customers|product|products|record|records|status|statuses)\b.*\b(?:to|as)\b",
     r"\badd\s+a\s+(new\s+)?(product|customer|order|row)",
 ]
 
@@ -50,9 +53,9 @@ FORECAST_PATTERNS = [r"\bpredict\b", r"\bforecast\b", r"\bwill\s+.*\s+happen", r
 # Keep this wording-oriented so aggregate questions such as "orders by country"
 # remain valid while requests for identifying/payment details get a clear answer.
 SENSITIVE_DATA_PATTERNS = [
-    r"\b(?:list|show|give|find|export|get|display)\b.*\b(?:customer )?emails?\b",
-    r"\b(?:list|show|give|find|export|get|display)\b.*\b(?:phone numbers?|telephone|addresses?|date of birth|dob)\b",
-    r"\b(?:list|show|give|find|export|get|display)\b.*\b(?:card last ?4|card number|transaction ids?)\b",
+    r"\b(?:list|show|give|find|export|get|display|download)\b.*\b(?:customer(?:'s|s)?\s+)?emails?\b",
+    r"\b(?:list|show|give|find|export|get|display|download)\b.*\b(?:phone numbers?|mobile numbers?|telephone|addresses?|date of birth|dob)\b",
+    r"\b(?:list|show|give|find|export|get|display|download)\b.*\b(?:card last ?4|card number|transaction ids?)\b",
     r"\b(?:what is|what's)\b.*\b(?:email|phone number|address|date of birth)\b",
 ]
 
@@ -81,6 +84,21 @@ SCHEMA_REQUEST_PATTERNS = [
     r"\bwhich table\s+(?:has|contains)\b",
 ]
 
+# These are concepts in the *database model*, rather than store-data metrics.
+# They intentionally describe a request's meaning instead of its word order.
+# The offline path needs this small, vocabulary-level distinction because it
+# cannot ask an LLM to interpret an incomplete or misspelled sentence.
+SCHEMA_TERMS = {
+    "table", "tables", "schema", "column", "columns", "field", "fields",
+    "relationship", "relationships", "foreign", "key", "keys", "join", "joins",
+    "database", "db",
+}
+SCHEMA_LOOKUP_CUES = {
+    "which", "what", "where", "name", "names", "describe", "contain", "contains",
+    "has", "have", "hold", "holds", "store", "stored", "available", "exist",
+    "exists", "show", "list", "give", "tell", "find", "locate",
+}
+
 AMBIGUITY_QUESTIONS = {
     "date_range": "Which date range should I use? (e.g. last 30 days, 2024-Q1, 2025-01-01 to 2025-03-31)",
     "metric": "Which metric do you mean exactly? (e.g. revenue = sum of line totals, order count, average order value)",
@@ -106,6 +124,13 @@ def _has(tokens: List[str], text: str) -> bool:
 VALID_LABELS = {"in_scope", "assistant_info", "schema_request", "ambiguous", "unsupported", "not_in_schema", "unrelated"}
 
 
+class IntentPayload(BaseModel):
+    label: str
+    reason: str = ""
+    missing: List[str] = Field(default_factory=list)
+    questions: List[str] = Field(default_factory=list)
+
+
 def _classify_with_llm(question: str, table_names: Optional[List[str]], history: Optional[List[dict]] = None) -> Optional[Classification]:
     """Use Gemini structured JSON classification before schema retrieval.
 
@@ -114,37 +139,38 @@ def _classify_with_llm(question: str, table_names: Optional[List[str]], history:
     outages; production classification does not use regex routing.
     """
     try:
-        from .llm import has_llm_key, _gemini_model, enable_langsmith
-        if not has_llm_key():
+        from .llm import generate_structured, has_llm_runtime
+        if not has_llm_runtime():
             return None
-        enable_langsmith()
         names = ", ".join(table_names or [])
         recent = "\n".join(f"{m.get('role')}: {m.get('content')}" for m in (history or [])[-6:])
         prompt = f'''Classify this request for a read-only business analytics assistant.
 Available table names: {names}
 Return ONLY JSON with keys label, reason, missing, questions. label must be one of:
 in_scope, assistant_info, schema_request, ambiguous, unsupported, not_in_schema, unrelated.
-Use schema_request for table/column/relationship questions. Requests such as “name/list/show/give all tables in my DB”, including obvious spelling mistakes such as “al”, are ALWAYS schema_request, never in_scope. Use ambiguous only when a required detail cannot be inferred from the semantic catalog or schema: “recent” requires a date range, “top” requires N, and vague performance/comparison requests need a metric or grouping. A named metric with a catalog definition (for example total revenue) is clear, and no stated date range means all available data; do NOT ask for a revenue-definition or date-range clarification in that case. Superlatives such as weakest, highest, or broadest are clear ranking requests when their metric and entity are named; they do not need a Top-N clarification. Use unsupported for writes, destructive SQL, forecasts, or direct contact/payment identifiers. Use unrelated only when it has no connection to available business data. Treat users as customers. Do not generate SQL.
+Use schema_request only for an explicit request about database metadata: tables, columns, schema, foreign keys, or relationships. Requests such as “name/list/show/give all tables in my DB”, including obvious spelling mistakes such as “al”, are ALWAYS schema_request, never in_scope. A request for business records, catalog entries, products, categories, orders, or analytical results is in_scope, even if it mentions how those records are organized. Use ambiguous only when a required detail cannot be inferred from the semantic catalog or schema: “recent” requires a date range, “top” requires N, and vague performance/comparison requests need a metric or grouping. A named metric with a catalog definition (for example total revenue) is clear, and no stated date range means all available data; do NOT ask for a revenue-definition or date-range clarification in that case. Superlatives such as weakest, highest, or broadest are clear ranking requests when their metric and entity are named; they do not need a Top-N clarification. Use unsupported for writes, destructive SQL, forecasts, or direct contact/payment identifiers. Use unrelated only when it has no connection to available business data. Treat users as customers. Do not generate SQL.
 Recent conversation (resolve pronouns and follow-ups from it):
 {recent}
 Question: {question}'''
-        raw = (_gemini_model().invoke(prompt).content or "").strip()
-        if "```" in raw:
-            raw = re.sub(r"^```(?:json)?\s*|\s*```$", "", raw, flags=re.I)
-        data = json.loads(raw)
-        label = data.get("label")
+        data = generate_structured(prompt, IntentPayload)
+        label = data.label
         if label not in VALID_LABELS:
             return None
-        missing = data.get("missing") if isinstance(data.get("missing"), list) else []
-        questions = data.get("questions") if isinstance(data.get("questions"), list) else []
-        return Classification(label, str(data.get("reason") or "LLM intent classification."), missing[:3], questions[:3], 0.9)
+        return Classification(label, data.reason or "LLM intent classification.", data.missing[:3], data.questions[:3], 0.9)
     except Exception:
         return None
 
 
 def classify(question: str, table_names: Optional[List[str]] = None, history: Optional[List[dict]] = None) -> Classification:
+    deterministic = _deterministic_intent_guard(question)
+    if deterministic is not None:
+        return deterministic
     llm_result = _classify_with_llm(question, table_names, history)
     if llm_result is not None:
+        # Safety-critical actions have already been handled by the deterministic
+        # guard. For the remaining natural-language intent, preserve the
+        # structured model result: a regex must not veto a semantically correct
+        # schema request merely because its grammar or spelling is unusual.
         return llm_result
     from .config import get_settings
     if get_settings().ALLOW_DETERMINISTIC_FALLBACK:
@@ -152,6 +178,47 @@ def classify(question: str, table_names: Optional[List[str]] = None, history: Op
     # Generic Text-to-SQL cannot be honestly emulated with phrase-specific
     # routing. Require the configured LLM rather than silently applying rules.
     return Classification("unsupported", "Generic Text-to-SQL requires a configured Gemini API key; no query was generated.")
+
+
+def _deterministic_intent_guard(question: str) -> Optional[Classification]:
+    """Reserve only unambiguous safety and metadata intents for code."""
+    ql = (question or "").strip().lower()
+    if not ql:
+        return None
+    for pat in WRITE_PATTERNS:
+        if re.search(pat, ql):
+            return Classification("unsupported", "Write/DDL operations are not supported; this app is read-only.", [], [], 0.99)
+    for pat in FORECAST_PATTERNS:
+        if re.search(pat, ql):
+            return Classification("unsupported", "Forecasting/prediction is not supported without a model and history.", [], [], 0.99)
+    for pat in SENSITIVE_DATA_PATTERNS:
+        if re.search(pat, ql):
+            return Classification("unsupported", "Direct personal and payment identifiers are restricted.", [], [], 0.99)
+    if _is_explicit_metadata_request(ql):
+        return Classification("schema_request", "Request is for database schema metadata.", [], [], 0.99)
+    return None
+
+
+def _is_explicit_metadata_request(question: str) -> bool:
+    """True for a direct request to inspect the database model itself.
+
+    Regexes retain coverage for compact, unambiguous commands.  The token
+    detector also supports ordinary variations in word order such as "which
+    table has..." and "...which table", without encoding a list of sentences.
+    """
+    ql = (question or "").lower()
+    if any(re.search(pattern, ql) for pattern in SCHEMA_REQUEST_PATTERNS):
+        return True
+    tokens = set(re.findall(r"[a-z0-9]+", ql))
+    schema_terms = tokens & SCHEMA_TERMS
+    if not schema_terms:
+        return False
+    # Columns, fields, relationships, keys and schemas are always metadata
+    # concepts. A bare word "table" is metadata only when the user is asking
+    # to locate or inspect one, not merely using it in a data question.
+    if schema_terms - {"table", "tables"}:
+        return True
+    return bool(tokens & SCHEMA_LOOKUP_CUES)
 
 
 def _classify_fallback(question: str, table_names: Optional[List[str]] = None) -> Classification:
@@ -238,6 +305,11 @@ def _classify_fallback(question: str, table_names: Optional[List[str]] = None) -
             r"month|week|day|quarter|year|categor|country|product|segment|channel|method", ql):
         missing.append("grouping")
         questions.append(AMBIGUITY_QUESTIONS["grouping"])
+
+    if re.search(r"\b(?:strongest|weakest|best)\s+(?:performers?|performance)\b", ql):
+        missing.append("metric")
+        if AMBIGUITY_QUESTIONS["metric"] not in questions:
+            questions.append(AMBIGUITY_QUESTIONS["metric"])
 
     # pronoun without entity: "his orders", "its sales", "that product"
     if re.search(r"\b(his|her|its|their|that|those)\b.*\b(order|sale|product|customer)s?\b", ql):
