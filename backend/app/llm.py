@@ -35,13 +35,17 @@ def _interaction(prompt: str, response_schema: Optional[dict] = None) -> str:
     from google.genai import types
 
     settings = get_settings()
+    # Keep a strong reference for the entire request.  Chaining
+    # ``_client().interactions.create(...)`` lets the short-lived Client be
+    # garbage-collected (and closed) before the SDK sends its HTTP request.
+    client = _client()
     kwargs: dict[str, Any] = {"model": settings.GEMINI_MODEL, "input": prompt, "store": False}
     if response_schema:
         kwargs["response_format"] = {
             "type": "text", "mime_type": "application/json", "schema": response_schema,
         }
     try:
-        interaction = _client().interactions.create(**kwargs)
+        interaction = client.interactions.create(**kwargs)
         return str(getattr(interaction, "output_text", "") or "").strip()
     except TypeError:
         # Compatibility for early maintained SDK releases. This path still
@@ -49,12 +53,16 @@ def _interaction(prompt: str, response_schema: Optional[dict] = None) -> str:
         config: dict[str, Any] = {"temperature": 0.1}
         if response_schema:
             config.update({"response_mime_type": "application/json", "response_schema": response_schema})
-        response = _client().models.generate_content(
+        response = client.models.generate_content(
             model=settings.GEMINI_MODEL,
             contents=prompt,
             config=types.GenerateContentConfig(**config),
         )
         return str(getattr(response, "text", "") or "").strip()
+    finally:
+        close = getattr(client, "close", None)
+        if callable(close):
+            close()
 
 
 def generate_structured(prompt: str, schema: Type[ModelT]) -> ModelT:

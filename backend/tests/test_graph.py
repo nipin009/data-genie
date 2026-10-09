@@ -58,4 +58,4 @@ def test_unhandled_offline_question_is_transparent():
     out = run_question("Revenue by city", [])
     assert out["classification"] == "in_scope"
     assert out["sql"] is None
-    assert "do not support" in out["answer"].lower()
+    assert "limited offline mode" in out["answer"].lower()

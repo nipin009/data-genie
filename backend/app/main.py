@@ -109,7 +109,7 @@ def readyz():
     if not has_llm_runtime() and not runtime.ALLOW_DETERMINISTIC_FALLBACK:
         raise HTTPException(
             503,
-            "Text-to-SQL is not configured. Set GOOGLE_API_KEY and install langchain-google-genai, or enable the limited deterministic fallback for demo use.",
+            "Text-to-SQL is not configured. Set GOOGLE_API_KEY and install the maintained google-genai package, or enable the limited deterministic fallback for demo use.",
         )
     return {"status": "ready", "mode": "llm" if has_llm_runtime() else "limited_offline"}
 

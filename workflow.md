@@ -160,10 +160,12 @@ Generic SQL generation requires configuration in the root `.env`:
 
 ```env
 GOOGLE_API_KEY=your_key
-GEMINI_MODEL=gemini-3.1-flash-lite
+GEMINI_MODEL=gemini-3.5-flash-lite
 ```
 
-If Gemini is unavailable, the backend does not guess or substitute unrelated template SQL.
+If Gemini is unavailable, the backend supports only the documented, deterministic demo
+templates when `ALLOW_DETERMINISTIC_FALLBACK=true`; it declines unsupported requests
+rather than substituting an unrelated query. General Text-to-SQL requires Gemini.
 
 ## 5. SQL safety validation
 

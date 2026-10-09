@@ -212,17 +212,17 @@ def node_generate(state: AgentState) -> AgentState:
 def node_unhandled_fallback(state: AgentState) -> AgentState:
     return {
         "answer": (
-            "That is a valid store-data question, but this deployment's offline query templates "
-            "do not support that exact calculation yet, so I won't substitute a different query. "
-            "Try a supported metric such as revenue, order count, average order value, ratings, "
-            "returns, payments, or a category/country/segment/brand breakdown."
+            "This deployment is running in limited offline mode, so it cannot safely generate SQL "
+            "for that request. I won't substitute a different calculation. Configure Gemini with "
+            "GOOGLE_API_KEY for general Text-to-SQL, or try a supported demo metric such as revenue, "
+            "order count, average order value, ratings, returns, payments, or a category/country/segment/brand breakdown."
         ),
         "done": True,
         "sql": None,
         "columns": [],
         "rows": [],
         "row_count": 0,
-        "chart": {"type": "none", "reason": "offline query capability not available"},
+        "chart": {"type": "none", "reason": "general Text-to-SQL requires a configured Gemini runtime"},
     }
 
 

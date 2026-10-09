@@ -94,7 +94,7 @@ Benchmark `benchmark/questions.yaml` (18 questions): joins, aggregations, edge c
 | `DATABASE_URL` | `postgresql+psycopg2://nipinmishra@/local_db?host=/tmp` | local Postgres `local_db` (socket auth); TCP form `postgresql+psycopg2://USER:PASS@localhost:5432/local_db` also works |
 | `TABLE_PREFIX` | `dg_` | Physical table prefix; all tables/queries use it |
 | `GOOGLE_API_KEY` | — | Enables Gemini; offline fallback otherwise |
-| `GEMINI_MODEL` | `gemini-1.5-flash` | Model name |
+| `GEMINI_MODEL` | `gemini-3.5-flash-lite` | Model name |
 | `QUERY_TIMEOUT_MS` / `MAX_ROWS` / `MAX_REPAIR_RETRIES` | 15000 / 500 / 2 | Guardrails |
 | `MAX_QUERY_COST` / `LLM_SUMMARIZER` | 0 / false | Optional Postgres planner-cost cap / optional second LLM prose call |
 | `AUTH_ENABLED` / `API_KEYS` | false / — | Optional API-key RBAC; keys use `secret:analyst` or `secret:admin` |
